@@ -1,0 +1,12 @@
+node_modules
+.next
+out
+*.log
+.DS_Store
+package-lock.json
+.env*
+npm-shrinkwrap.json
+yarn.lock
+.history/
+uploads/
+%TEMP%*

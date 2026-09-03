@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+.gitignore
+.history
+.env
+.env.*
+uploads
+*.xlsx
+*.md
+start.bat
+%TEMP%home.html
+.dockerignore
