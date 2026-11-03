@@ -69,6 +69,30 @@ test('学生表标题、括号表头、空行不影响字段对应及错误物�
   assert.ok(parsed.issues.some((issue) => issue.row === 5));
 });
 
+test('就业表保留省市、一致性及企业分类，不把岗位专业混作就业岗位', () => {
+  const ws = worksheet([
+    ['姓名', '学号', '去向', '企业名称', '岗位名称', '岗位/专业', '单位省份', '单位城市', '与实习单位是否一致', '与实习岗位是否一致', '企业分类', '上岸单位/院校'],
+    ['就业导入样例', 'employment-import-01', '就业上岗', '导入样例公司', '提示工程师', '', '吉林省', '长春市', '是', '否', 'Ⅱ类', ''],
+    ['升学导入样例', 'employment-import-02', '升学、考公成功', '', '', '计算机科学', '', '', '', '', '', '样例大学'],
+  ]);
+  const parsed = parseStudentSheet(XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false, blankrows: true }));
+  assert.deepEqual(parsed.items.map(({ destination, internCompany, internPosition, gradSchool, gradMajor, employmentProvince, employmentCity, sameInternCompany, sameInternPosition, companyCategory }) => (
+    { destination, internCompany, internPosition, gradSchool, gradMajor, employmentProvince, employmentCity, sameInternCompany, sameInternPosition, companyCategory }
+  )), [
+    { destination: '就业上岗', internCompany: '导入样例公司', internPosition: '提示工程师', gradSchool: '', gradMajor: '', employmentProvince: '吉林省', employmentCity: '长春市', sameInternCompany: '是', sameInternPosition: '否', companyCategory: 'Ⅱ类' },
+    { destination: '升学、考公成功', internCompany: '', internPosition: '', gradSchool: '样例大学', gradMajor: '计算机科学', employmentProvince: '', employmentCity: '', sameInternCompany: '', sameInternPosition: '', companyCategory: '' },
+  ]);
+});
+
+test('缺岗位列时不把实习岗位一致性选项误当岗位名称', () => {
+  const parsed = parseStudentSheet([
+    ['姓名', '学号', '去向', '与实习岗位是否一致'],
+    ['待补岗位样例', 'employment-import-03', '其他就业', '是'],
+  ]);
+  assert.equal(parsed.items[0].internPosition, '');
+  assert.equal(parsed.items[0].sameInternPosition, '是');
+});
+
 test('图表字段未填写仍保留学生，不套用尚未实施的新去向规则', () => {
   const parsed = parseStudentSheet([
     ['姓名', '学号', '去向', '实训方向'],

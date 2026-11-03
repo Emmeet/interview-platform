@@ -1,7 +1,10 @@
 import { NextResponse } from 'next/server';
 import { lookupStudentInfo } from '@/lib/student-info';
 
-/** GET /api/student-info/lookup?configId=&studentName=&studentId= */
+/** GET /api/student-info/lookup?configId=&studentName=&studentId=
+ * 返回 { found, record, nameMismatch, prefill, internship }。
+ * prefill 仅带出同届实习基本信息，internship 仅用于显示原单位/岗位对照，不创建就业记录。
+ */
 export async function GET(request) {
   const sp = request.nextUrl.searchParams;
   try {

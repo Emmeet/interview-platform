@@ -18,9 +18,15 @@ import {
 import ImportFeedback from './ImportFeedback';
 import { readImportWorkbook } from '../lib/import-workbook';
 import { createLabeledChart } from '../lib/chart-value-labels';
-import { assessRecord, describeRules } from '../lib/assessment';
-
-const CATEGORY_OPTIONS = ['待判定', 'SOP类IT岗位', '非SOP类IT岗位', 'IT企业的非IT岗位', '其它岗位', '自主创业', '升学、公职类'];
+import { JOB_CATEGORY_OPTIONS as CATEGORY_OPTIONS, assessRecord, describeRules, deriveSopStatus } from '../lib/assessment';
+import {
+  COMPANY_CATEGORY_OPTIONS,
+  EMPLOYMENT_DESTINATIONS,
+  EMPLOYMENT_SERVICE_DESTINATIONS,
+  canonicalEmploymentDestination,
+  isEmploymentCompanyDestination,
+  isEmploymentSuccessDestination,
+} from '../lib/employment-fields';
 const STATUS_OPTIONS = ['待判定', '是', '否'];
 const DEST_STACK_LABELS = ['已实习', '备考研究生', '备考公务员', '待实习'];
 const DEST_STACK_COLORS = ['#3b82f6', '#f59e0b', '#8b5cf6', '#94a3b8'];
@@ -569,11 +575,11 @@ function IconSparkles() {
 
 function DestinationBadge({ dest }) {
   const canonical = canonicalDestination(dest);
-  if (isInternDestination(dest)) {
+  if (isInternDestination(dest) || isEmploymentCompanyDestination(dest)) {
     return (
       <span className="dd-badge dd-badge-interned">
         <span className="dd-badge-dot" />
-        已实习
+        {isInternDestination(dest) ? '已实习' : canonicalEmploymentDestination(dest)}
       </span>
     );
   }
@@ -599,6 +605,18 @@ function DestinationBadge({ dest }) {
       {canonical || '待实习'}
     </span>
   );
+}
+
+function recordHasCompany(record) {
+  return record.configType === '就业'
+    ? isEmploymentCompanyDestination(record.destination)
+    : isInternDestination(record.destination);
+}
+
+function recordHasSchool(record) {
+  return record.configType === '就业'
+    ? isEmploymentSuccessDestination(record.destination)
+    : record.destination === '备考研究生';
 }
 
 /* --------------------------------------------------------------------------
@@ -769,7 +787,7 @@ export default function DataDashboard() {
   const [filterDir, setFilterDir] = useState('');
   const [detail, setDetail] = useState(null);
   const [editing, setEditing] = useState(false);
-  const [editForm, setEditForm] = useState({ jobCategory: '待判定', qualityStatus: '待判定', starStatus: '待判定' });
+  const [editForm, setEditForm] = useState({ jobCategory: '待判定', companyCategory: '待判定', qualityStatus: '待判定', starStatus: '待判定' });
   const [loadError, setLoadError] = useState('');
   const [configs, setConfigs] = useState([]);
   const [configId, setConfigId] = useState('');
@@ -783,6 +801,7 @@ export default function DataDashboard() {
   const [overwriteAssessment, setOverwriteAssessment] = useState(false);
 
   const selectedConfig = configs.find((c) => String(c.id) === String(configId));
+  const employmentMode = selectedConfig?.type === '就业';
 
   const chartDestStackRef = useRef(null);
   const chartMatchRef = useRef(null);
@@ -1209,19 +1228,25 @@ export default function DataDashboard() {
      -------------------------------------------------------------------------- */
   async function exportExcel() {
     const XLSX = await import('xlsx');
+    const stage = employmentMode ? '就业' : '实习';
     const header = [
       '序号', '姓名', '班级', '学号', '籍贯', '实训方向', '性别', '手机号',
-      '去向', '实习单位名称', '实习单位具体地点', '实习单位联系人', '实习单位联系人电话',
-      '具体业务线', '实习岗位', '实习薪资', '实习入职时间', '实习结束时间',
-      '考研目标院校', '目标专业', '备注', '岗位分类', '是否SOP岗位', '是否实习明星',
+      '去向', `${stage}单位名称`, `${stage}单位具体地点`, `${stage}单位联系人`, `${stage}单位联系人电话`,
+      '具体业务线', `${stage}岗位`, `${stage}薪资`, `${stage}入职时间`, `${stage}结束时间`,
+      employmentMode ? '上岸单位/院校' : '考研目标院校', employmentMode ? '岗位/专业' : '目标专业',
+      '备注', '岗位分类', '是否SOP岗位', employmentMode ? '是否明星就业' : '是否实习明星',
+      '单位省份', '单位城市', '与实习单位是否一致', '与实习岗位是否一致', '企业分类', '是否明星企业',
     ];
     const rows = records.map((r, i) => [
       i + 1, r.studentName, r.className, r.studentId, r.hometown,
-      r.trainingDirection, r.gender, r.phone, canonicalDestination(r.destination),
+      r.trainingDirection, r.gender, r.phone,
+      employmentMode ? canonicalEmploymentDestination(r.destination) : canonicalDestination(r.destination),
       r.internCompany, r.internLocation, r.internContact, r.internContactPhone,
       r.businessLine, r.internPosition, salaryDisplay(r.internSalary), r.internStartDate, r.internEndDate,
       r.gradSchool, r.gradMajor, r.remark,
       r.jobCategory || '待判定', r.sopStatus || '待判定', r.starStatus || '待判定',
+      r.employmentProvince || '', r.employmentCity || '', r.sameInternCompany || '', r.sameInternPosition || '',
+      r.companyCategory || '待判定', r.qualityStatus || '待判定',
     ]);
     const ws = XLSX.utils.aoa_to_sheet([header, ...rows]);
     ws['!cols'] = [
@@ -1231,9 +1256,10 @@ export default function DataDashboard() {
       { wch: 18 }, { wch: 16 }, { wch: 10 }, { wch: 12 }, { wch: 12 },
       { wch: 18 }, { wch: 16 }, { wch: 24 },
       { wch: 18 }, { wch: 14 }, { wch: 16 },
+      { wch: 16 }, { wch: 16 }, { wch: 22 }, { wch: 22 }, { wch: 14 }, { wch: 16 },
     ];
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, '实习统计');
+    XLSX.utils.book_append_sheet(wb, ws, `${stage}统计`);
     const title = (configs.find((c) => String(c.id) === String(configId)) || {}).title || '实习就业数据';
     XLSX.writeFile(wb, title + '.xlsx');
   }
@@ -1473,9 +1499,9 @@ export default function DataDashboard() {
   async function assessAll() {
     if (assessing) return;
     if (isDemoMode) {
-      setRecords((prev) => prev.map((r) => ({ ...r, ...assessRecord(r) })));
+      setRecords((prev) => prev.map((r) => ({ ...r, ...assessRecord({ ...r, configType: selectedConfig?.type || '实习' }) })));
       setAssessConfirm(false);
-      setImportFeedback({ type: 'success', title: '判定完成', message: '演示数据已按规则判定。', details: describeRules() });
+      setImportFeedback({ type: 'success', title: '判定完成', message: '演示数据已按规则判定。', details: describeRules(selectedConfig?.type) });
       return;
     }
     if (!configId) {
@@ -1501,7 +1527,7 @@ export default function DataDashboard() {
         type: 'success',
         title: '判定完成',
         message: `已按规则更新 ${assessed} 条，保持原判定 ${kept} 条，共 ${total} 条记录。`,
-        details: describeRules(),
+        details: describeRules(selectedConfig?.type),
       });
     } catch (e) {
       setImportFeedback({ type: 'error', title: '判定失败', message: e.message || '判定失败', details: [] });
@@ -1537,6 +1563,7 @@ export default function DataDashboard() {
     setDetail(r);
     setEditForm({
       jobCategory: r.jobCategory || '待判定',
+      companyCategory: r.companyCategory || '待判定',
       qualityStatus: r.qualityStatus || '待判定',
       starStatus: r.starStatus || '待判定',
     });
@@ -1544,9 +1571,22 @@ export default function DataDashboard() {
   }
 
   async function saveAssessment(id) {
+    const changes = Object.fromEntries(Object.entries(editForm).filter(([key, value]) => value !== (detail?.[key] || '待判定')));
+    if (!Object.keys(changes).length) {
+      setEditing(false);
+      return;
+    }
     if (isDemoMode) {
-      setRecords((prev) => prev.map((r) => (r.id === id ? { ...r, ...editForm } : r)));
-      setDetail((prev) => (prev && prev.id === id ? { ...prev, ...editForm } : prev));
+      const applyChanges = (record) => {
+        const next = { ...record, ...changes };
+        if (changes.jobCategory) next.sopStatus = deriveSopStatus(changes.jobCategory);
+        if (changes.companyCategory && !changes.starStatus && !record.starStatusManual) {
+          next.starStatus = assessRecord({ ...next, configType: selectedConfig?.type || '实习' }).starStatus;
+        }
+        return next;
+      };
+      setRecords((prev) => prev.map((r) => (r.id === id ? applyChanges(r) : r)));
+      setDetail((prev) => (prev && prev.id === id ? applyChanges(prev) : prev));
       setEditing(false);
       return;
     }
@@ -1554,7 +1594,7 @@ export default function DataDashboard() {
       const res = await fetch(withBasePath('/api/student-info/' + id), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editForm),
+        body: JSON.stringify(changes),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'HTTP ' + res.status);
@@ -2024,10 +2064,21 @@ export default function DataDashboard() {
             onChange={(e) => setFilterDest(e.target.value)}
           >
             <option value="">全部去向</option>
-            <option value={INTERN_DEST_LABEL}>{INTERN_DEST_LABEL}</option>
-            <option value="待实习">待实习</option>
-            <option value="备考研究生">备考研究生</option>
-            <option value="备考公务员">备考公务员</option>
+            {employmentMode ? (
+              <>
+                {EMPLOYMENT_DESTINATIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                <optgroup label="参军／自主创业">
+                  {EMPLOYMENT_SERVICE_DESTINATIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                </optgroup>
+              </>
+            ) : (
+              <>
+                <option value={INTERN_DEST_LABEL}>{INTERN_DEST_LABEL}</option>
+                <option value="待实习">待实习</option>
+                <option value="备考研究生">备考研究生</option>
+                <option value="备考公务员">备考公务员</option>
+              </>
+            )}
           </select>
 
           <select
@@ -2082,8 +2133,8 @@ export default function DataDashboard() {
                   <th>姓名 / 学号</th>
                   <th>班级 / 实训方向</th>
                   <th>去向状态</th>
-                  <th>实习单位 / 岗位</th>
-                  <th>考研院校 / 专业</th>
+                  <th>{employmentMode ? '就业单位 / 岗位' : '实习单位 / 岗位'}</th>
+                  <th>{employmentMode ? '上岸单位 / 岗位专业' : '考研院校 / 专业'}</th>
                   <th>创建日期</th>
                   <th>教师判定</th>
                   <th className="sticky-action">操作</th>
@@ -2091,12 +2142,10 @@ export default function DataDashboard() {
               </thead>
               <tbody>
                 {list.map((r) => {
-                  const intern = isInternDestination(r.destination) ? (r.internCompany || '—') : '—';
-                  const internSub = isInternDestination(r.destination)
-                    ? (r.internPosition || '')
-                    : '';
-                  const grad = r.destination === '备考研究生' ? (r.gradSchool || '—') : '—';
-                  const gradSub = r.destination === '备考研究生' ? (r.gradMajor || '') : '';
+                  const intern = recordHasCompany(r) ? (r.internCompany || '—') : '—';
+                  const internSub = recordHasCompany(r) ? (r.internPosition || '') : '';
+                  const grad = recordHasSchool(r) ? (r.gradSchool || '—') : '—';
+                  const gradSub = recordHasSchool(r) ? (r.gradMajor || '') : '';
 
                   return (
                     <tr key={r.id}>
@@ -2115,7 +2164,7 @@ export default function DataDashboard() {
                         <DestinationBadge dest={r.destination} />
                       </td>
                       <td>
-                        {isInternDestination(r.destination) ? (
+                        {recordHasCompany(r) ? (
                           <div>
                             <div className="dd-company-name">{intern}</div>
                             <div className="dd-company-sub">
@@ -2128,7 +2177,7 @@ export default function DataDashboard() {
                         )}
                       </td>
                       <td>
-                        {r.destination === '备考研究生' ? (
+                        {recordHasSchool(r) ? (
                           <div>
                             <div style={{ fontWeight: 600, color: '#0f172a' }}>{grad}</div>
                             {gradSub ? <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{gradSub}</div> : null}
@@ -2269,6 +2318,20 @@ export default function DataDashboard() {
                   </div>
 
                   <div className="form-group" style={{ marginBottom: 14 }}>
+                    <label htmlFor="assessmentCompanyCategory">企业分类</label>
+                    <select
+                      id="assessmentCompanyCategory"
+                      className="dd-filter-select"
+                      style={{ width: '100%' }}
+                      value={editForm.companyCategory}
+                      onChange={(e) => setEditForm((f) => ({ ...f, companyCategory: e.target.value }))}
+                    >
+                      {COMPANY_CATEGORY_OPTIONS.map((value) => <option key={value} value={value}>{value}</option>)}
+                    </select>
+                    <div className="field-hint">Ⅰ类：500强/上市；Ⅱ类：专精特新/独角兽/政府/事业；Ⅲ类：中小型IT企业；Ⅳ类：其它。未人工覆盖的就业明星随企业分类更新。</div>
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: 14 }}>
                     <label>是否为明星企业</label>
                     <select
                       className="dd-filter-select"
@@ -2359,22 +2422,35 @@ export default function DataDashboard() {
                   </div>
 
                   {/* Internship Info */}
-                  {isInternDestination(detail.destination) ? (
+                  {recordHasCompany(detail) ? (
                     <>
-                      <div className="dd-info-section-title">实习就职信息</div>
+                      <div className="dd-info-section-title">{detail.configType === '就业' ? '就业就职信息' : '实习就职信息'}</div>
                       <div className="dd-info-grid">
                         <div className="dd-info-item">
-                          <span className="dd-info-label">实习单位名称</span>
+                          <span className="dd-info-label">{detail.configType === '就业' ? '就业单位名称' : '实习单位名称'}</span>
                           <span className="dd-info-value">{detail.internCompany || '—'}</span>
                         </div>
                         <div className="dd-info-item">
-                          <span className="dd-info-label">实习岗位</span>
+                          <span className="dd-info-label">{detail.configType === '就业' ? '就业岗位' : '实习岗位'}</span>
                           <span className="dd-info-value">{detail.internPosition || '—'}</span>
                         </div>
                         <div className="dd-info-item">
-                          <span className="dd-info-label">实习月薪/待遇</span>
+                          <span className="dd-info-label">{detail.configType === '就业' ? '就业月薪/待遇' : '实习月薪/待遇'}</span>
                           <span className="dd-info-value">{detail.internSalary ? salaryDisplay(detail.internSalary) : '—'}</span>
                         </div>
+                        <div className="dd-info-item">
+                          <span className="dd-info-label">企业分类</span>
+                          <span className="dd-info-value">{detail.companyCategory || '待判定'}</span>
+                        </div>
+                        {detail.configType === '就业' ? (
+                          <>
+                            <div className="dd-info-item"><span className="dd-info-label">单位省份</span><span className="dd-info-value">{detail.employmentProvince || '—'}</span></div>
+                            <div className="dd-info-item"><span className="dd-info-label">单位城市</span><span className="dd-info-value">{detail.employmentCity || '—'}</span></div>
+                            <div className="dd-info-item"><span className="dd-info-label">与实习单位是否一致</span><span className="dd-info-value">{detail.sameInternCompany || '—'}</span></div>
+                            <div className="dd-info-item"><span className="dd-info-label">与实习岗位是否一致</span><span className="dd-info-value">{detail.sameInternPosition || '—'}</span></div>
+                          </>
+                        ) : (
+                          <>
                         <div className="dd-info-item">
                           <span className="dd-info-label">具体业务线</span>
                           <span className="dd-info-value">{detail.businessLine || '—'}</span>
@@ -2399,21 +2475,23 @@ export default function DataDashboard() {
                           <span className="dd-info-label">实习结束时间</span>
                           <span className="dd-info-value">{detail.internEndDate || '—'}</span>
                         </div>
+                          </>
+                        )}
                       </div>
                     </>
                   ) : null}
 
                   {/* Graduate School Info */}
-                  {detail.destination === '备考研究生' ? (
+                  {recordHasSchool(detail) ? (
                     <>
-                      <div className="dd-info-section-title">考研升学信息</div>
+                      <div className="dd-info-section-title">{detail.configType === '就业' ? '升学、考公成功信息' : '考研升学信息'}</div>
                       <div className="dd-info-grid">
                         <div className="dd-info-item">
-                          <span className="dd-info-label">目标院校</span>
+                          <span className="dd-info-label">{detail.configType === '就业' ? '上岸单位/院校' : '目标院校'}</span>
                           <span className="dd-info-value">{detail.gradSchool || '—'}</span>
                         </div>
                         <div className="dd-info-item">
-                          <span className="dd-info-label">目标专业</span>
+                          <span className="dd-info-label">{detail.configType === '就业' ? '岗位/专业' : '目标专业'}</span>
                           <span className="dd-info-value">{detail.gradMajor || '—'}</span>
                         </div>
                       </div>
@@ -2497,7 +2575,7 @@ export default function DataDashboard() {
                 <strong> {records.length} </strong>条记录套用以下规则：
               </p>
               <ul className="dd-rule-list">
-                {describeRules().map((rule) => (
+                {describeRules(selectedConfig?.type).map((rule) => (
                   <li key={rule}>{rule}</li>
                 ))}
               </ul>
