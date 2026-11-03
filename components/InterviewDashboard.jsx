@@ -1,9 +1,12 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import ImportFeedback from './ImportFeedback';
 import { analyzeAll } from '../lib/analyzer';
-import { findCol } from '../lib/client-storage';
 import { withBasePath } from '../lib/base-path';
+import { parseRecordsSheet } from '../lib/interview-import';
+import { readImportWorkbook } from '../lib/import-workbook';
+import { createLabeledChart } from '../lib/chart-value-labels';
 
 const TECH_KW = ['java','python','javascript','typescript','react','vue','angular','node','spring','mysql','redis','mongodb','sql','linux','docker','kubernetes','git','算法','数据结构','设计模式','并发','多线程','jvm','微服务','分布式','消息队列','kafka','机器学习','深度学习','大数据','前端','后端','测试','运维','实现','原理','复杂度','优化','架构','机制','手写','区别','流程'];
 const PROJ_KW = ['项目','做过','介绍','实习','负责','职责','角色','亮点','难点','遇到','方案'];
@@ -27,69 +30,6 @@ const CAT_BADGE = {
   '其他': 'badge-other',
 };
 
-function parseRecordsSheet(rows) {
-  // 长表（一行一个问题，含问题序号列）：按 单位+岗位+学生+轮次 聚合
-  if (rows.some((r) => findCol(r, ['问题序号']) !== '')) {
-    const groups = new Map();
-    let skipped = 0;
-    for (const row of rows) {
-      const company = String(findCol(row, ['单位名称', '单位', '公司']) || '').trim();
-      const name = String(findCol(row, ['学生序号']) || '').trim();
-      const position = String(findCol(row, ['规范岗位名称', '岗位名称', '岗位', '职位']) || '').trim();
-      if (!name && !company) { skipped++; continue; }
-
-      const round = String(findCol(row, ['面试轮次', '轮次']) || '').trim();
-      const key = [company, position, name, round].join('||');
-      if (!groups.has(key)) {
-        groups.set(key, {
-          studentName: name,
-          studentId: String(findCol(row, ['学号']) || '').trim(),
-          department: String(findCol(row, ['部门', '院系', '学院']) || '').trim(),
-          company,
-          position,
-          jdText: String(findCol(row, ['岗位JD', 'JD', '招聘', '岗位描述', '岗位要求', '任职']) || '').trim(),
-          questions: [],
-          result: String(findCol(row, ['面试结果', '结果']) || '').trim(),
-        });
-      }
-      const g = groups.get(key);
-      const q = String(findCol(row, ['面试问题', '问题']) || '').trim();
-      if (q) g.questions.push({ n: Number(findCol(row, ['问题序号'])) || g.questions.length + 1, q });
-      const jd = String(findCol(row, ['岗位JD']) || '').trim();
-      if (!g.jdText && jd) g.jdText = jd;
-    }
-    const items = [...groups.values()].map((g) => ({
-      ...g,
-      questions: g.questions.sort((a, b) => a.n - b.n).map((x) => x.q),
-    }));
-    return { items, skipped, total: rows.length };
-  }
-
-  // 宽表（一行一场面试，多问题在单元格内换行）
-  const items = [];
-  let skipped = 0;
-  for (const row of rows) {
-    const name = String(findCol(row, ['学生序号']) || '').trim();
-    const company = String(findCol(row, ['单位名称', '单位', '公司']) || '').trim();
-    if (!name && !company) { skipped++; continue; }
-
-    const qRaw = String(findCol(row, ['面试问题', '问题']) || '').trim();
-    const questions = qRaw ? qRaw.split(/[\n\r|；;]/).map((s) => s.trim()).filter(Boolean) : [];
-
-    items.push({
-      studentName: name,
-      studentId: String(findCol(row, ['学号']) || '').trim(),
-      department: String(findCol(row, ['部门', '院系', '学院']) || '').trim(),
-      company,
-      position: String(findCol(row, ['规范岗位名称', '岗位', '职位']) || '').trim(),
-      jdText: String(findCol(row, ['岗位JD', 'JD', '招聘', '岗位描述', '岗位要求', '任职']) || '').trim(),
-      questions,
-      result: String(findCol(row, ['面试结果', '结果']) || '').trim(),
-    });
-  }
-  return { items, skipped, total: rows.length };
-}
-
 export default function InterviewDashboard() {
   const [records, setRecords] = useState([]);
   const [search, setSearch] = useState('');
@@ -98,6 +38,8 @@ export default function InterviewDashboard() {
   const [filterDepartment, setFilterDepartment] = useState('');
   const [detail, setDetail] = useState(null);
   const [loadError, setLoadError] = useState('');
+  const [importFeedback, setImportFeedback] = useState(null);
+  const [importing, setImporting] = useState(false);
   const chartCatRef = useRef(null);
   const chartHotRef = useRef(null);
   const chartCovRef = useRef(null);
@@ -105,16 +47,20 @@ export default function InterviewDashboard() {
 
   const analysis = useMemo(() => analyzeAll(records), [records]);
 
-  async function loadAll() {
+  async function loadAll({ clearOnError = true } = {}) {
     try {
       const res = await fetch(withBasePath('/api/records'), { cache: 'no-store' });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'HTTP ' + res.status);
       setRecords(Array.isArray(data.records) ? data.records : []);
       setLoadError('');
+      return true;
     } catch (e) {
-      setRecords([]);
-      setLoadError('加载失败：' + e.message);
+      if (clearOnError) {
+        setRecords([]);
+        setLoadError('加载失败：' + e.message);
+      }
+      return false;
     }
   }
 
@@ -131,7 +77,7 @@ export default function InterviewDashboard() {
 
       const catData = (analysis.questionCategories || []).filter((c) => c.count > 0);
       if (catData.length && chartCatRef.current) {
-        localCharts.cat = new Chart(chartCatRef.current, {
+        localCharts.cat = createLabeledChart(Chart, chartCatRef.current, {
           type: 'doughnut',
           data: {
             labels: catData.map((c) => c.category),
@@ -143,25 +89,25 @@ export default function InterviewDashboard() {
 
       const hot = (analysis.hotKeywords || []).slice(0, 10);
       if (hot.length && chartHotRef.current) {
-        localCharts.hot = new Chart(chartHotRef.current, {
+        localCharts.hot = createLabeledChart(Chart, chartHotRef.current, {
           type: 'bar',
           data: { labels: hot.map((h) => h.keyword), datasets: [{ data: hot.map((h) => h.questionCount), backgroundColor: '#3b82f6' }] },
-          options: { responsive: true, indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { font: { size: 11 } } } } },
+          options: { responsive: true, maintainAspectRatio: false, indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { font: { size: 11 } } } } },
         });
       }
 
       const cov = (analysis.coverage || []).slice(0, 12);
       if (cov.length && chartCovRef.current) {
-        localCharts.cov = new Chart(chartCovRef.current, {
+        localCharts.cov = createLabeledChart(Chart, chartCovRef.current, {
           type: 'bar',
           data: {
             labels: cov.map((c) => c.keyword),
             datasets: [
               { label: 'JD 中出现', data: cov.map((c) => c.jdCount), backgroundColor: '#93c5fd' },
-              { label: '被问到', data: cov.map((c) => c.questionCount), backgroundColor: '#3b82f6' },
+              { label: '被问到', data: cov.map((c) => c.askedCount), backgroundColor: '#3b82f6' },
             ],
           },
-          options: { responsive: true, plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { font: { size: 11 } } } } },
+          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { font: { size: 11 } } } } },
         });
       }
     });
@@ -209,26 +155,167 @@ export default function InterviewDashboard() {
 
   async function importExcel(input) {
     if (!input.files || !input.files[0]) return;
+    const file = input.files[0];
+    const fileName = file.name;
+    let sheetName = '';
+    setImporting(true);
+    setImportFeedback(null);
     try {
+      let buf;
+      try {
+        buf = await file.arrayBuffer();
+      } catch (e) {
+        setImportFeedback({
+          type: 'error',
+          title: '导入失败',
+          message: '读取文件阶段：无法读取该文件',
+          fileName,
+          details: [e.message],
+        });
+        return;
+      }
+
       const XLSX = await import('xlsx');
-      const buf = await input.files[0].arrayBuffer();
-      const wb = XLSX.read(buf);
-      const ws = wb.Sheets[wb.SheetNames[0]];
+      let wb;
+      try {
+        wb = readImportWorkbook(XLSX, buf, fileName);
+      } catch (e) {
+        setImportFeedback({
+          type: 'error',
+          title: '导入失败',
+          message: '读取文件阶段：文件格式无法解析，请使用 Excel 或 CSV',
+          fileName,
+          details: [e.message],
+        });
+        return;
+      }
+
+      if (!wb.SheetNames || !wb.SheetNames.length) {
+        setImportFeedback({
+          type: 'error',
+          title: '导入失败',
+          message: '读取文件阶段：文件中没有工作表',
+          fileName,
+        });
+        return;
+      }
+
+      sheetName = wb.SheetNames[0];
+      const ws = wb.Sheets[sheetName];
       const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
-      const { items, skipped, total } = parseRecordsSheet(rows);
-      const res = await fetch(withBasePath('/api/records/batch'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'HTTP ' + res.status);
-      alert('导入完成：成功 ' + data.imported + ' 条，跳过 ' + (skipped + data.skipped) + ' 条，共读取 ' + total + ' 行');
-      loadAll();
+      const parsed = parseRecordsSheet(rows);
+      const parseIssues = Array.isArray(parsed.issues) ? parsed.issues : [];
+      const headerBlocked = parseIssues.some((issue) => issue.code === 'MISSING_HEADERS' || issue.code === 'EMPTY_SHEET');
+
+      if (headerBlocked || !parsed.items.length) {
+        setImportFeedback({
+          type: 'error',
+          title: '导入失败',
+          message: headerBlocked
+            ? ('表头校验阶段：' + (parseIssues[0] && parseIssues[0].message ? parseIssues[0].message : '缺少必需表头或没有数据行'))
+            : ('解析阶段：没有可导入的记录。共读取 ' + parsed.total + ' 行，跳过 ' + parsed.skipped + ' 条'),
+          fileName,
+          sheetName,
+          details: parseIssues,
+        });
+        return;
+      }
+
+      let res;
+      try {
+        res = await fetch(withBasePath('/api/records/batch'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items: parsed.items }),
+        });
+      } catch (e) {
+        setImportFeedback({
+          type: 'error',
+          title: '导入失败',
+          message: '请求阶段：无法连接导入接口',
+          fileName,
+          sheetName,
+          details: [e.message, ...parseIssues],
+        });
+        return;
+      }
+
+      const text = await res.text();
+      let data = {};
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch {
+        setImportFeedback({
+          type: 'error',
+          title: '导入失败',
+          message: '服务器响应阶段：返回了非 JSON（HTTP ' + res.status + '）',
+          fileName,
+          sheetName,
+          details: parseIssues,
+        });
+        return;
+      }
+
+      const imported = Number(data.imported) || 0;
+      const skipped = (parsed.skipped || 0) + (Number(data.skipped) || 0);
+      const details = parseIssues.concat(Array.isArray(data.issues) ? data.issues : []);
+
+      if (!res.ok) {
+        setImportFeedback({
+          type: 'error',
+          title: '导入失败',
+          message: (res.status >= 500 ? '数据库写入阶段：' : '服务器响应阶段：') + (data.error || ('HTTP ' + res.status)),
+          fileName,
+          sheetName,
+          details,
+        });
+        return;
+      }
+
+      if (imported <= 0) {
+        setImportFeedback({
+          type: 'error',
+          title: '导入失败',
+          message: '成功 0 条，跳过 ' + skipped + ' 条，共读取 ' + parsed.total + ' 行',
+          fileName,
+          sheetName,
+          details,
+        });
+        return;
+      }
+
+      const partial = skipped > 0 || details.length > 0;
+      const feedback = {
+        type: partial ? 'warning' : 'success',
+        title: partial ? '部分导入成功' : '导入成功',
+        message: '成功 ' + imported + ' 条，跳过 ' + skipped + ' 条，共读取 ' + parsed.total + ' 行',
+        fileName,
+        sheetName,
+        details,
+      };
+      setImportFeedback(feedback);
+
+      const refreshed = await loadAll({ clearOnError: false });
+      if (!refreshed) {
+        setImportFeedback({
+          ...feedback,
+          type: 'warning',
+          title: '导入成功但列表刷新失败',
+          message: '已写入 ' + imported + ' 条，但列表刷新失败，请手动刷新页面查看。导入结果：成功 ' + imported + ' 条，跳过 ' + skipped + ' 条',
+        });
+      }
     } catch (e) {
-      alert('导入失败：' + e.message);
+      setImportFeedback({
+        type: 'error',
+        title: '导入失败',
+        message: e.message || '导入过程中发生未知错误',
+        fileName,
+        sheetName,
+      });
+    } finally {
+      setImporting(false);
+      input.value = '';
     }
-    input.value = '';
   }
 
   async function deleteRec(id) {
@@ -244,7 +331,7 @@ export default function InterviewDashboard() {
   }
 
   return (
-    <div className="container">
+    <div className="container dashboard-interview">
       <div className="hero">
         <h1>运营看板</h1>
         <p>全部面试经验记录与分析。支持筛选、查看详情、一键导出 Excel。</p>
@@ -288,15 +375,23 @@ export default function InterviewDashboard() {
             ))}
           </select>
           <button className="btn btn-ghost btn-sm" onClick={exportExcel}>导出 Excel</button>
-          <label className="btn btn-primary btn-sm" style={{ cursor: 'pointer', position: 'relative', overflow: 'hidden' }}>导入 Excel
+          <label
+            className="btn btn-primary btn-sm"
+            style={{ cursor: importing ? 'not-allowed' : 'pointer', position: 'relative', overflow: 'hidden', opacity: importing ? 0.65 : 1 }}
+            aria-busy={importing}
+            onClick={(e) => { if (importing) e.preventDefault(); }}
+          >
+            {importing ? '导入中…' : '导入 Excel'}
             <input
               type="file"
               accept=".xlsx,.xls,.csv"
+              disabled={importing}
               style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0, pointerEvents: 'none' }}
               onChange={(e) => importExcel(e.target)}
             />
           </label>
         </div>
+        <ImportFeedback feedback={importFeedback} onDismiss={() => setImportFeedback(null)} />
         <div id="tableWrap">
           {loadError ? (
             <div className="empty">{loadError}</div>
@@ -329,7 +424,7 @@ export default function InterviewDashboard() {
                         </span>
                       </td>
                       <td>{qs.length}</td>
-                      <td>
+                      <td className="cell-wrap">
                         {cats.map((c, i) => (
                           <span key={c}>
                             {i > 0 ? ' ' : ''}
@@ -354,11 +449,18 @@ export default function InterviewDashboard() {
 
       <div className="chart-grid">
         <div className="chart-box"><h3>面试问题分类分布</h3><canvas ref={chartCatRef} id="chartCat" /></div>
-        <div className="chart-box"><h3>高频考察关键词 Top10</h3><canvas ref={chartHotRef} id="chartHot" /></div>
+        <div className="chart-box">
+          <h3>高频考察关键词 Top10</h3>
+          <div className="chart-canvas-wrap">
+            <canvas ref={chartHotRef} id="chartHot" />
+          </div>
+        </div>
       </div>
       <div className="chart-box" style={{ marginBottom: 20 }}>
         <h3>JD 要求被问到的覆盖情况（被问到次数）</h3>
-        <canvas ref={chartCovRef} id="chartCov" />
+        <div className="chart-canvas-wrap">
+          <canvas ref={chartCovRef} id="chartCov" />
+        </div>
       </div>
 
       <div

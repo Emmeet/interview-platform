@@ -3,29 +3,22 @@
 import { useEffect, useRef, useState } from 'react';
 import { MUNICIPALITIES, PROVINCE_CITY } from '../lib/region-data';
 import { withBasePath } from '../lib/base-path';
+import {
+  INTERN_DEST_LABEL,
+  TRAINING_OPTIONS,
+  analyzeSalary,
+  canonicalDestination,
+  isInternDestination,
+  parseHometown,
+  salaryDisplay,
+} from '../lib/intern-fields';
 
 const PROVINCES = Object.keys(PROVINCE_CITY);
 
-function splitHometown(hometown) {
-  const s = String(hometown || '').trim();
-  if (!s) return { province: '', city: '' };
-  if (MUNICIPALITIES.includes(s)) return { province: s, city: s };
-  for (const p of PROVINCES) {
-    if (s.startsWith(p)) {
-      const rest = s.slice(p.length);
-      const list = PROVINCE_CITY[p] || [];
-      const matched = list.find((c) => rest === c || rest.startsWith(c));
-      return { province: p, city: matched || rest };
-    }
-  }
-  return { province: '', city: '' };
-}
+
 
 function setFormValue(form, name, value) {
   if (form && form.elements[name]) form.elements[name].value = value || '';
-}
-function isInternOrJob(dest) {
-  return dest === '实习' || dest === '就业' || dest === '实习就业';
 }
 
 
@@ -45,10 +38,12 @@ export default function StudentInfoForm() {
   const [lookedUp, setLookedUp] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [pendingFill, setPendingFill] = useState(null);
+  const [salaryText, setSalaryText] = useState('');
+  const [extraCity, setExtraCity] = useState('');
 
   const selectedConfig = configs.find((c) => String(c.id) === String(configId));
   const configType = selectedConfig && selectedConfig.type === '就业' ? '就业' : '实习';
-  const unitWord = configType;
+  const salaryInfo = analyzeSalary(salaryText);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,6 +77,7 @@ export default function StudentInfoForm() {
 
   function updateCities(nextProv) {
     setProvince(nextProv);
+    setExtraCity('');
     if (nextProv && MUNICIPALITIES.includes(nextProv)) {
       setCity(nextProv);
     } else {
@@ -91,14 +87,13 @@ export default function StudentInfoForm() {
 
   function fillRecord(record) {
     const form = formRef.current;
-    const ht = splitHometown(record.hometown);
+    const ht = parseHometown(record.hometown);
     setProvince(ht.province);
     setCity(ht.city);
-    let dest = record.destination || '';
-    if (isInternOrJob(dest)) {
-      dest = unitWord;
-    }
+    setExtraCity(ht.city);
+    const dest = canonicalDestination(record.destination || '');
     setDestination(dest);
+    setSalaryText(record.internSalary || '');
     setStudentName(record.studentName || studentName);
     setStudentId(record.studentId || studentId);
     requestAnimationFrame(() => {
@@ -112,7 +107,6 @@ export default function StudentInfoForm() {
       setFormValue(form, 'internContact', record.internContact);
       setFormValue(form, 'internContactPhone', record.internContactPhone);
       setFormValue(form, 'businessLine', record.businessLine);
-      setFormValue(form, 'internSalary', record.internSalary);
       setFormValue(form, 'internStartDate', record.internStartDate);
       setFormValue(form, 'internEndDate', record.internEndDate);
       setFormValue(form, 'gradSchool', record.gradSchool);
@@ -126,6 +120,8 @@ export default function StudentInfoForm() {
     setDestination('');
     setProvince('');
     setCity('');
+    setSalaryText('');
+    setExtraCity('');
     [
       'className', 'trainingDirection', 'gender', 'phone',
       'internCompany', 'internPosition', 'internLocation', 'internContact',
@@ -146,6 +142,8 @@ export default function StudentInfoForm() {
     setDestination('');
     setProvince('');
     setCity('');
+    setSalaryText('');
+    setExtraCity('');
     setStudentName('');
     setStudentId('');
     setLookedUp(false);
@@ -235,14 +233,14 @@ export default function StudentInfoForm() {
         trainingDirection: data.trainingDirection || '',
         gender: data.gender || '',
         phone: data.phone || '',
-        destination: data.destination || destination || '',
+        destination: canonicalDestination(data.destination || destination || ''),
         internCompany: data.internCompany || '',
         internLocation: data.internLocation || '',
         internContact: data.internContact || '',
         internContactPhone: data.internContactPhone || '',
         businessLine: data.businessLine || '',
         internPosition: data.internPosition || '',
-        internSalary: data.internSalary || '',
+        internSalary: salaryDisplay(data.internSalary || ''),
         internStartDate: data.internStartDate || '',
         internEndDate: data.internEndDate || '',
         gradSchool: data.gradSchool || '',
@@ -282,25 +280,25 @@ export default function StudentInfoForm() {
         showMsg('去向为必填项', 'error');
         return;
       }
-      if (isInternOrJob(payload.destination)) {
+      if (isInternDestination(payload.destination)) {
         if (!payload.internCompany) {
-          showMsg(`${unitWord}单位名称为必填项`, 'error');
+          showMsg('实习单位名称为必填项', 'error');
           return;
         }
         if (!payload.internPosition) {
-          showMsg(`${unitWord}岗位为必填项`, 'error');
+          showMsg('实习岗位为必填项', 'error');
           return;
         }
         if (!payload.internLocation) {
-          showMsg(`${unitWord}单位具体地点为必填项`, 'error');
+          showMsg('实习单位具体地点为必填项', 'error');
           return;
         }
         if (!payload.internContact) {
-          showMsg(`${unitWord}单位联系人为必填项`, 'error');
+          showMsg('实习单位联系人为必填项', 'error');
           return;
         }
         if (!payload.internContactPhone) {
-          showMsg(`${unitWord}单位联系人电话为必填项`, 'error');
+          showMsg('实习单位联系人电话为必填项', 'error');
           return;
         }
         if (!payload.businessLine) {
@@ -308,15 +306,15 @@ export default function StudentInfoForm() {
           return;
         }
         if (!payload.internSalary) {
-          showMsg(`${unitWord}薪资为必填项`, 'error');
+          showMsg('实习薪资为必填项', 'error');
           return;
         }
         if (!payload.internStartDate) {
-          showMsg('入职时间为必填项', 'error');
+          showMsg('实习入职时间为必填项', 'error');
           return;
         }
         if (!payload.internEndDate) {
-          showMsg(`${unitWord}结束时间为必填项`, 'error');
+          showMsg('实习结束时间为必填项', 'error');
           return;
         }
       } else if (payload.destination === '备考研究生') {
@@ -355,7 +353,8 @@ export default function StudentInfoForm() {
     }
   }
 
-  const cities = province && PROVINCE_CITY[province] ? PROVINCE_CITY[province] : [];
+  const baseCities = province && PROVINCE_CITY[province] ? PROVINCE_CITY[province] : [];
+  const cities = extraCity && province && !baseCities.includes(extraCity) ? [...baseCities, extraCity] : baseCities;
   const locked = lookedUp;
 
   return (
@@ -380,11 +379,6 @@ export default function StudentInfoForm() {
                   const nextCid = e.target.value;
                   setConfigId(nextCid);
                   resetLookup();
-                  const nextCfg = configs.find((c) => String(c.id) === String(nextCid));
-                  const nextUnit = nextCfg && nextCfg.type === '就业' ? '就业' : '实习';
-                  if (isInternOrJob(destination)) {
-                    setDestination(nextUnit);
-                  }
                 }}
                 required
                 disabled={locked}
@@ -483,9 +477,9 @@ export default function StudentInfoForm() {
                   <label>实训方向 <span className="req">*</span></label>
                   <select name="trainingDirection" required>
                     <option value="">请选择</option>
-                    <option value="前端实训1-3班">前端实训1-3班</option>
-                    <option value="前端实训4-6班">前端实训4-6班</option>
-                    <option value="后端实训">后端实训</option>
+                    {TRAINING_OPTIONS.map((item) => (
+                      <option key={item} value={item}>{item}</option>
+                    ))}
                   </select>
                 </div>
                 <div className="form-group">
@@ -514,7 +508,7 @@ export default function StudentInfoForm() {
                   onChange={(e) => setDestination(e.target.value)}
                 >
                   <option value="">请选择</option>
-                  <option value={unitWord}>{unitWord}</option>
+                  <option value={INTERN_DEST_LABEL}>{INTERN_DEST_LABEL}</option>
                   <option value="待实习">待实习</option>
                   <option value="备考研究生">备考研究生</option>
                   <option value="备考公务员">备考公务员</option>
@@ -522,44 +516,56 @@ export default function StudentInfoForm() {
               </div>
             </div>
 
-            <div className="card" id="internCard" style={{ display: isInternOrJob(destination) ? 'block' : 'none' }}>
-              <div className="card-title">{unitWord}信息</div>
+            <div className="card" id="internCard" style={{ display: isInternDestination(destination) ? 'block' : 'none' }}>
+              <div className="card-title">实习信息</div>
               <div className="form-grid">
                 <div className="form-group">
-                  <label>{unitWord}单位名称 <span className="req">*</span></label>
-                  <input name="internCompany" required={isInternOrJob(destination)} placeholder="如：科大讯飞" />
+                  <label>实习单位名称 <span className="req">*</span></label>
+                  <input name="internCompany" required={isInternDestination(destination)} placeholder="如：科大讯飞" />
                 </div>
                 <div className="form-group">
-                  <label>{unitWord}岗位 <span className="req">*</span></label>
-                  <input name="internPosition" required={isInternOrJob(destination)} placeholder={configType === '就业' ? '如：Java开发工程师' : '如：Java开发实习生'} />
+                  <label>实习岗位 <span className="req">*</span></label>
+                  <input name="internPosition" required={isInternDestination(destination)} placeholder="如：Java开发实习生" />
                 </div>
                 <div className="form-group full">
-                  <label>{unitWord}单位具体地点 <span className="req">*</span></label>
-                  <input name="internLocation" required={isInternOrJob(destination)} placeholder="精确到具体门牌号，如：上海市浦东新区张江高科川和路55弄" />
+                  <label>实习单位具体地点 <span className="req">*</span></label>
+                  <input name="internLocation" required={isInternDestination(destination)} placeholder="精确到具体门牌号，如：上海市浦东新区张江高科川和路55弄" />
                 </div>
                 <div className="form-group">
-                  <label>{unitWord}单位联系人 <span className="req">*</span></label>
-                  <input name="internContact" required={isInternOrJob(destination)} placeholder="如：代思曼" />
+                  <label>实习单位联系人 <span className="req">*</span></label>
+                  <input name="internContact" required={isInternDestination(destination)} placeholder="如：代思曼" />
                 </div>
                 <div className="form-group">
-                  <label>{unitWord}单位联系人电话 <span className="req">*</span></label>
-                  <input name="internContactPhone" required={isInternOrJob(destination)} placeholder="如：18817774509" />
+                  <label>实习单位联系人电话 <span className="req">*</span></label>
+                  <input name="internContactPhone" required={isInternDestination(destination)} placeholder="如：18817774509" />
                 </div>
                 <div className="form-group">
                   <label>具体业务线 <span className="req">*</span></label>
-                  <input name="businessLine" required={isInternOrJob(destination)} placeholder="如：七牛云暑期实训营" />
+                  <input name="businessLine" required={isInternDestination(destination)} placeholder="如：七牛云暑期实训营" />
                 </div>
                 <div className="form-group">
-                  <label>{unitWord}薪资 <span className="req">*</span></label>
-                  <input name="internSalary" required={isInternOrJob(destination)} placeholder="如：300/天 或 5000/月" />
+                  <label>实习薪资 <span className="req">*</span></label>
+                  <input
+                    name="internSalary"
+                    required={isInternDestination(destination)}
+                    placeholder="如：300/天 或 5000/月"
+                    value={salaryText}
+                    onChange={(e) => setSalaryText(e.target.value)}
+                  />
+                  <div className="field-hint">
+                    日薪按 22 个工作日折成月薪后保存。
+                    {salaryText.trim() && salaryInfo.monthly != null && salaryInfo.display !== salaryText.trim()
+                      ? ` 将保存为 ${salaryInfo.display}`
+                      : ''}
+                  </div>
                 </div>
                 <div className="form-group">
-                  <label>入职时间 <span className="req">*</span></label>
-                  <input name="internStartDate" required={isInternOrJob(destination)} placeholder="如：7.06" />
+                  <label>实习入职时间 <span className="req">*</span></label>
+                  <input name="internStartDate" required={isInternDestination(destination)} placeholder="如：7.06" />
                 </div>
                 <div className="form-group">
-                  <label>{unitWord}结束时间 <span className="req">*</span></label>
-                  <input name="internEndDate" required={isInternOrJob(destination)} placeholder="如：9.06" />
+                  <label>实习结束时间 <span className="req">*</span></label>
+                  <input name="internEndDate" required={isInternDestination(destination)} placeholder="如：9.06" />
                 </div>
               </div>
             </div>

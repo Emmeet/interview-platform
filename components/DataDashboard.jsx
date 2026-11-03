@@ -1,50 +1,765 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { findCol } from '../lib/client-storage';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { withBasePath } from '../lib/base-path';
+import {
+  INTERN_DEST_LABEL,
+  TRAINING_OPTIONS,
+  SALARY_BUCKETS,
+  analyzeSalary,
+  canonicalDestination,
+  salaryDisplay,
+  inferWorkPlace,
+  isInternDestination,
+  parseStudentSheet,
+  salaryBucket,
+  topWorkPlaces,
+} from '../lib/intern-fields';
+import ImportFeedback from './ImportFeedback';
+import { readImportWorkbook } from '../lib/import-workbook';
+import { createLabeledChart } from '../lib/chart-value-labels';
+import { assessRecord, describeRules } from '../lib/assessment';
 
 const CATEGORY_OPTIONS = ['待判定', 'SOP类IT岗位', '非SOP类IT岗位', 'IT企业的非IT岗位', '其它岗位', '自主创业', '升学、公职类'];
 const STATUS_OPTIONS = ['待判定', '是', '否'];
+const DEST_STACK_LABELS = ['已实习', '备考研究生', '备考公务员', '待实习'];
+const DEST_STACK_COLORS = ['#3b82f6', '#f59e0b', '#8b5cf6', '#94a3b8'];
+const MATCH_CATEGORIES = new Set(['SOP类IT岗位', '非SOP类IT岗位']);
+const JOB_CATEGORY_COLORS = {
+  'SOP类IT岗位': '#2563eb',
+  '非SOP类IT岗位': '#0ea5e9',
+  'IT企业的非IT岗位': '#8b5cf6',
+  '其它岗位': '#94a3b8',
+  '自主创业': '#f59e0b',
+  '升学、公职类': '#10b981',
+  '待判定': '#cbd5e1',
+};
+const SALARY_COLORS = ['#93c5fd', '#60a5fa', '#3b82f6', '#2563eb', '#1d4ed8', '#1e3a8a', '#94a3b8'];
 
-function parseStudentSheet(rows) {
-  const items = [];
-  let skipped = 0;
-  for (const row of rows) {
-    const name = String(findCol(row, ['姓名']) || '').trim();
-    if (!name) { skipped++; continue; }
+/* --------------------------------------------------------------------------
+   Demo / Fallback Sample Data (for preview when database is offline/empty)
+   -------------------------------------------------------------------------- */
+const DEMO_CONFIGS = [
+  { id: 'demo-1', title: '2026届计算机科学与技术专业实习就业跟踪', type: '实习', isActive: true },
+  { id: 'demo-2', title: '2025届毕业生去向数据跟踪', type: '就业', isActive: true },
+];
 
-    let dest = String(findCol(row, ['去向']) || '').trim();
-    if (dest === '实习') dest = '实习就业';
+const DEMO_RECORDS = [
+  {
+    id: 101,
+    studentName: '张梓轩',
+    studentId: '20220101',
+    className: '一班',
+    hometown: '吉林省长春市',
+    trainingDirection: TRAINING_OPTIONS[0],
+    gender: '男',
+    phone: '13812345678',
+    destination: '已找到实习单位',
+    internCompany: '北京字节跳动科技有限公司',
+    internLocation: '北京市海淀区紫金数码园',
+    internContact: '刘主管',
+    internContactPhone: '010-88886666',
+    businessLine: '抖音电商核心前端',
+    internPosition: '前端开发工程师',
+    internSalary: '8000',
+    internStartDate: '2026-03-01',
+    internEndDate: '2026-08-31',
+    jobCategory: 'SOP类IT岗位',
+    sopStatus: '是',
+    starStatus: '是',
+  },
+  {
+    id: 102,
+    studentName: '李雨涵',
+    studentId: '20220102',
+    className: '一班',
+    hometown: '黑龙江省哈尔滨市',
+    trainingDirection: TRAINING_OPTIONS[0],
+    gender: '女',
+    phone: '13923456789',
+    destination: '已找到实习单位',
+    internCompany: '美团科技有限公司',
+    internLocation: '北京市朝阳区望京东路',
+    internContact: '王经理',
+    internContactPhone: '010-66668888',
+    businessLine: '美团到店综合前端',
+    internPosition: 'Web前端实习生',
+    internSalary: '6500',
+    internStartDate: '2026-03-15',
+    internEndDate: '2026-07-31',
+    jobCategory: 'SOP类IT岗位',
+    sopStatus: '是',
+    starStatus: '是',
+  },
+  {
+    id: 103,
+    studentName: '王俊杰',
+    studentId: '20220103',
+    className: '二班',
+    hometown: '吉林省吉林市',
+    trainingDirection: TRAINING_OPTIONS[2],
+    gender: '男',
+    phone: '13734567890',
+    destination: '已找到实习单位',
+    internCompany: '中国第一汽车集团有限公司',
+    internLocation: '吉林省长春市绿园区',
+    internContact: '张部长',
+    internContactPhone: '0431-8590000',
+    businessLine: '红旗研发总院智能网联',
+    internPosition: 'Java研发工程师',
+    internSalary: '5500',
+    internStartDate: '2026-02-20',
+    internEndDate: '2026-08-20',
+    jobCategory: 'SOP类IT岗位',
+    sopStatus: '是',
+    starStatus: '否',
+  },
+  {
+    id: 104,
+    studentName: '赵晨阳',
+    studentId: '20220104',
+    className: '二班',
+    hometown: '辽宁省沈阳市',
+    trainingDirection: TRAINING_OPTIONS[2],
+    gender: '男',
+    phone: '13645678901',
+    destination: '备考研究生',
+    gradSchool: '吉林大学',
+    gradMajor: '计算机系统结构',
+    jobCategory: '升学、公职类',
+    sopStatus: '否',
+    starStatus: '否',
+    remark: '目标考取吉大计算机学院硕士，目前备考状态良好',
+  },
+  {
+    id: 105,
+    studentName: '孙艺菲',
+    studentId: '20220105',
+    className: '三班',
+    hometown: '山东省青岛市',
+    trainingDirection: TRAINING_OPTIONS[1],
+    gender: '女',
+    phone: '13556789012',
+    destination: '已找到实习单位',
+    internCompany: '腾讯计算机系统有限公司',
+    internLocation: '广东省深圳市南山区高新科技园',
+    internContact: '陈总监',
+    internContactPhone: '0755-86013388',
+    businessLine: '微信支付核心研发',
+    internPosition: '前端开发实习生',
+    internSalary: '300/天',
+    internStartDate: '2026-04-01',
+    internEndDate: '2026-09-30',
+    jobCategory: 'SOP类IT岗位',
+    sopStatus: '是',
+    starStatus: '是',
+  },
+  {
+    id: 106,
+    studentName: '周浩然',
+    studentId: '20220106',
+    className: '三班',
+    hometown: '吉林省四平市',
+    trainingDirection: TRAINING_OPTIONS[2],
+    gender: '男',
+    phone: '13467890123',
+    destination: '待实习',
+    jobCategory: '待判定',
+    sopStatus: '待判定',
+    starStatus: '待判定',
+    remark: '正在积极投递长春本地软件研发岗位',
+  },
+  {
+    id: 107,
+    studentName: '吴佳琪',
+    studentId: '20220107',
+    className: '四班',
+    hometown: '辽宁省大连市',
+    trainingDirection: TRAINING_OPTIONS[0],
+    gender: '女',
+    phone: '13378901234',
+    destination: '备考公务员',
+    jobCategory: '升学、公职类',
+    sopStatus: '否',
+    starStatus: '否',
+    remark: '备考吉林省选调生及国考行政岗位',
+  },
+  {
+    id: 108,
+    studentName: '郑子涵',
+    studentId: '20220108',
+    className: '四班',
+    hometown: '吉林省延边州',
+    trainingDirection: TRAINING_OPTIONS[2],
+    gender: '男',
+    phone: '13289012345',
+    destination: '已找到实习单位',
+    internCompany: '华为技术有限公司',
+    internLocation: '江苏省南京市雨花台区软件谷',
+    internContact: '高主管',
+    internContactPhone: '025-56667777',
+    businessLine: '云计算与大数据平台',
+    internPosition: '后端开发实习生',
+    internSalary: '7500',
+    internStartDate: '2026-03-10',
+    internEndDate: '2026-08-31',
+    jobCategory: 'SOP类IT岗位',
+    sopStatus: '是',
+    starStatus: '是',
+  },
+  {
+    id: 109,
+    studentName: '冯晓萌',
+    studentId: '20220109',
+    className: '五班',
+    hometown: '河北省唐山市',
+    trainingDirection: TRAINING_OPTIONS[1],
+    gender: '女',
+    phone: '13190123456',
+    destination: '已找到实习单位',
+    internCompany: '阿里巴巴网络技术有限公司',
+    internLocation: '浙江省杭州市余杭区西溪园区',
+    internContact: '孙HR',
+    internContactPhone: '0571-85022088',
+    businessLine: '阿里云智能服务部',
+    internPosition: '前端工程师',
+    internSalary: '8500',
+    internStartDate: '2026-03-01',
+    internEndDate: '2026-08-31',
+    jobCategory: 'SOP类IT岗位',
+    sopStatus: '是',
+    starStatus: '是',
+  },
+  {
+    id: 110,
+    studentName: '陈伟祺',
+    studentId: '20220110',
+    className: '五班',
+    hometown: '吉林省长春市',
+    trainingDirection: TRAINING_OPTIONS[2],
+    gender: '男',
+    phone: '13001234567',
+    destination: '已找到实习单位',
+    internCompany: '长春吉大正元信息技术股份有限公司',
+    internLocation: '吉林省长春市高新区硅谷大街',
+    internContact: '钱经理',
+    internContactPhone: '0431-85170000',
+    businessLine: '网络安全中间件事业部',
+    internPosition: 'Java安全研发实习生',
+    internSalary: '4500',
+    internStartDate: '2026-03-01',
+    internEndDate: '2026-07-31',
+    jobCategory: '非SOP类IT岗位',
+    sopStatus: '否',
+    starStatus: '否',
+  },
+  {
+    id: 111,
+    studentName: '韩天宇',
+    studentId: '20220111',
+    className: '六班',
+    hometown: '黑龙江省大庆市',
+    trainingDirection: TRAINING_OPTIONS[1],
+    gender: '男',
+    phone: '15912345678',
+    destination: '已找到实习单位',
+    internCompany: '网易（杭州）网络有限公司',
+    internLocation: '浙江省杭州市滨江区网商路',
+    internContact: '吴主管',
+    internContactPhone: '0571-89852000',
+    businessLine: '网易云音乐前端团队',
+    internPosition: '前端开发工程师',
+    internSalary: '7000',
+    internStartDate: '2026-03-15',
+    internEndDate: '2026-09-15',
+    jobCategory: 'SOP类IT岗位',
+    sopStatus: '是',
+    starStatus: '是',
+  },
+  {
+    id: 112,
+    studentName: '杨梦琪',
+    studentId: '20220112',
+    className: '六班',
+    hometown: '内蒙古通辽市',
+    trainingDirection: TRAINING_OPTIONS[0],
+    gender: '女',
+    phone: '15823456789',
+    destination: '备考研究生',
+    gradSchool: '东北师范大学',
+    gradMajor: '计算机软件与理论',
+    jobCategory: '升学、公职类',
+    sopStatus: '否',
+    starStatus: '否',
+  },
+  {
+    id: 113,
+    studentName: '徐嘉树',
+    studentId: '20220113',
+    className: '一班',
+    hometown: '吉林省松原市',
+    trainingDirection: TRAINING_OPTIONS[2],
+    gender: '男',
+    phone: '15734567890',
+    destination: '待实习',
+    jobCategory: '待判定',
+    sopStatus: '待判定',
+    starStatus: '待判定',
+  },
+  {
+    id: 114,
+    studentName: '高博文',
+    studentId: '20220114',
+    className: '二班',
+    hometown: '吉林省通化市',
+    trainingDirection: TRAINING_OPTIONS[2],
+    gender: '男',
+    phone: '15645678901',
+    destination: '已找到实习单位',
+    internCompany: '北京快手科技有限公司',
+    internLocation: '北京市海淀区西二旗中路',
+    internContact: '赵HR',
+    internContactPhone: '010-89100000',
+    businessLine: '商业化主站工程研发',
+    internPosition: '服务端开发实习生',
+    internSalary: '350/天',
+    internStartDate: '2026-03-01',
+    internEndDate: '2026-08-31',
+    jobCategory: 'SOP类IT岗位',
+    sopStatus: '是',
+    starStatus: '是',
+  },
+  {
+    id: 115,
+    studentName: '林诗涵',
+    studentId: '20220115',
+    className: '三班',
+    hometown: '吉林省白山市',
+    trainingDirection: TRAINING_OPTIONS[1],
+    gender: '女',
+    phone: '15556789012',
+    destination: '已找到实习单位',
+    internCompany: '上海寻梦信息技术有限公司（拼多多）',
+    internLocation: '上海市长宁区娄山关路',
+    internContact: '孙主管',
+    internContactPhone: '021-52661111',
+    businessLine: '移动端运营工具开发',
+    internPosition: '前端开发实习生',
+    internSalary: '8000',
+    internStartDate: '2026-03-01',
+    internEndDate: '2026-08-31',
+    jobCategory: 'SOP类IT岗位',
+    sopStatus: '是',
+    starStatus: '否',
+  }
+];
 
-    items.push({
-      studentName: name,
-      className: String(findCol(row, ['班级']) || '').trim(),
-      studentId: String(findCol(row, ['学号']) || '').trim(),
-      hometown: String(findCol(row, ['籍贯']) || '').trim(),
-      trainingDirection: String(findCol(row, ['实训方向']) || '').trim(),
-      gender: String(findCol(row, ['性别']) || '').trim(),
-      phone: String(findCol(row, ['手机', '电话', '联系方式']) || '').trim(),
-      destination: dest,
-      internCompany: String(findCol(row, ['实习单位名称', '单位名称', '实习公司']) || '').trim(),
-      internLocation: String(findCol(row, ['具体地点', '单位地点']) || '').trim(),
-      internContact: String(findCol(row, ['联系人']) && !String(findCol(row, ['联系人'])).includes('电话') ? findCol(row, ['联系人']) : findCol(row, ['实习单位联系人']) || '').trim(),
-      internContactPhone: String(findCol(row, ['联系人电话', '联系电话']) || '').trim(),
-      businessLine: String(findCol(row, ['业务线']) || '').trim(),
-      internPosition: String(findCol(row, ['实习岗位', '岗位']) || '').trim(),
-      internSalary: String(findCol(row, ['实习薪资', '薪资']) || '').trim(),
-      internStartDate: String(findCol(row, ['入职时间', '开始时间']) || '').trim(),
-      internEndDate: String(findCol(row, ['结束时间']) || '').trim(),
-      gradSchool: String(findCol(row, ['考研目标院校', '目标院校', '考研院校']) || '').trim(),
-      gradMajor: String(findCol(row, ['目标专业', '考研专业']) || '').trim(),
-      remark: String(findCol(row, ['备注']) || '').trim(),
-      jobCategory: String(findCol(row, ['岗位分类', '岗位类别', '岗位类型']) || '').trim() || '待判定',
-      sopStatus: String(findCol(row, ['是否SOP岗位', 'SOP岗位', 'SOP']) || '').trim() || '待判定',
-      starStatus: String(findCol(row, ['是否实习明星', '实习明星', '明星']) || '').trim() || '待判定',
+/* --------------------------------------------------------------------------
+   SVG Icons
+   -------------------------------------------------------------------------- */
+
+function IconUsers() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+  );
+}
+
+function IconBriefcase() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect width="20" height="14" x="2" y="7" rx="2" ry="2" />
+      <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
+    </svg>
+  );
+}
+
+function IconClock() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <polyline points="12 6 12 12 16 14" />
+    </svg>
+  );
+}
+
+function IconGraduationCap() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 10v6M2 10l10-5 10 5-10 5z" />
+      <path d="M6 12v5c3 3 9 3 12 0v-5" />
+    </svg>
+  );
+}
+
+function IconBuilding() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect width="16" height="20" x="4" y="2" rx="2" ry="2" />
+      <path d="M9 22v-4h6v4" />
+      <path d="M8 6h.01" /><path d="M16 6h.01" /><path d="M8 10h.01" /><path d="M16 10h.01" /><path d="M8 14h.01" /><path d="M16 14h.01" />
+    </svg>
+  );
+}
+
+function IconTarget() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <circle cx="12" cy="12" r="6" />
+      <circle cx="12" cy="12" r="2" />
+    </svg>
+  );
+}
+
+function IconStar() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+    </svg>
+  );
+}
+
+function IconSearch() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="11" cy="11" r="8" />
+      <line x1="21" x2="16.65" y1="21" y2="16.65" />
+    </svg>
+  );
+}
+
+function IconRefresh() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+      <path d="M21 3v5h-5" />
+      <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+      <path d="M8 16H3v5" />
+    </svg>
+  );
+}
+
+function IconDownload() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="7 10 12 15 17 10" />
+      <line x1="12" x2="12" y1="15" y2="3" />
+    </svg>
+  );
+}
+
+function IconUpload() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="17 8 12 3 7 8" />
+      <line x1="12" x2="12" y1="3" y2="15" />
+    </svg>
+  );
+}
+
+function IconSpinner() {
+  return (
+    <svg className="btn-spinner" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" opacity="0.25" />
+      <path d="M21 12a9 9 0 0 0-9-9" />
+    </svg>
+  );
+}
+
+function IconEye() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function IconEdit() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+    </svg>
+  );
+}
+
+function IconTrash() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 6h18" />
+      <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+      <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+    </svg>
+  );
+}
+
+function IconX() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </svg>
+  );
+}
+
+function IconCalendar() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect width="18" height="18" x="3" y="4" rx="2" ry="2" />
+      <line x1="16" x2="16" y1="2" y2="6" />
+      <line x1="8" x2="8" y1="2" y2="6" />
+      <line x1="3" x2="21" y1="10" y2="10" />
+    </svg>
+  );
+}
+
+function IconChevronDown() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
+}
+
+function IconBarChart() {
+  return (
+    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="12" x2="12" y1="20" y2="10" />
+      <line x1="18" x2="18" y1="20" y2="4" />
+      <line x1="6" x2="6" y1="20" y2="16" />
+    </svg>
+  );
+}
+
+function IconReset() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+      <path d="M3 3v5h5" />
+    </svg>
+  );
+}
+
+function IconActivity() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+    </svg>
+  );
+}
+
+function IconSparkles() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />
+    </svg>
+  );
+}
+
+/* --------------------------------------------------------------------------
+   Destination Status Badge
+   -------------------------------------------------------------------------- */
+
+function DestinationBadge({ dest }) {
+  const canonical = canonicalDestination(dest);
+  if (isInternDestination(dest)) {
+    return (
+      <span className="dd-badge dd-badge-interned">
+        <span className="dd-badge-dot" />
+        已实习
+      </span>
+    );
+  }
+  if (canonical === '备考研究生') {
+    return (
+      <span className="dd-badge dd-badge-grad">
+        <span className="dd-badge-dot" />
+        备考研究生
+      </span>
+    );
+  }
+  if (canonical === '备考公务员') {
+    return (
+      <span className="dd-badge dd-badge-civil">
+        <span className="dd-badge-dot" />
+        备考公务员
+      </span>
+    );
+  }
+  return (
+    <span className="dd-badge dd-badge-pending">
+      <span className="dd-badge-dot" />
+      {canonical || '待实习'}
+    </span>
+  );
+}
+
+/* --------------------------------------------------------------------------
+   Data Processing Helpers
+   -------------------------------------------------------------------------- */
+
+function destStackLabel(dest) {
+  if (isInternDestination(dest)) return '已实习';
+  if (dest === '备考研究生' || dest === '备考公务员' || dest === '待实习') return dest;
+  return null;
+}
+
+function uniqueStudents(rows) {
+  const seen = new Set();
+  const out = [];
+  for (const r of rows) {
+    const sid = String(r.studentId || '').trim();
+    const key = sid ? 'sid:' + sid : (r.id ? 'id:' + r.id : 'idx:' + out.length);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      ...r,
+      destination: canonicalDestination(r.destination),
+      trainingDirectionStd: String(r.trainingDirection || '').trim(),
     });
   }
-  return { items, skipped, total: rows.length };
+  return out;
 }
+
+function trainingAxis(students) {
+  const present = new Set();
+  students.forEach((student) => {
+    if (student.trainingDirectionStd) present.add(student.trainingDirectionStd);
+  });
+  return TRAINING_OPTIONS.filter((dir) => present.has(dir));
+}
+
+function groupByTrainingDir(students, labels) {
+  const groups = {};
+  labels.forEach((dir) => { groups[dir] = []; });
+  students.forEach((student) => {
+    const dir = student.trainingDirectionStd;
+    if (groups[dir]) groups[dir].push(student);
+  });
+  return groups;
+}
+
+/** 记录创建日期（本地时区 YYYY-MM-DD）；演示数据没有该字段时显示占位符。 */
+function formatCreatedAt(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 10);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function formatRate(num, den) {
+  if (!den) return { text: '--', sub: '--' };
+  return {
+    text: ((num / den) * 100).toFixed(1) + '%',
+    sub: num + '/' + den + ' 人',
+  };
+}
+
+function destroyCharts(bag) {
+  Object.values(bag || {}).forEach((c) => {
+    if (!c || typeof c.destroy !== 'function') return;
+    try { c.destroy(); } catch (_) { /* already destroyed */ }
+  });
+}
+
+function createChart(Chart, canvas, config) {
+  if (!canvas || !canvas.isConnected) return null;
+  const prev = typeof Chart.getChart === 'function' ? Chart.getChart(canvas) : null;
+  if (prev) prev.destroy();
+  return createLabeledChart(Chart, canvas, config);
+}
+
+function buildInternAnalytics(records) {
+  const students = uniqueStudents(records);
+  const dirLabels = trainingAxis(students);
+  const groups = groupByTrainingDir(students, dirLabels);
+  const total = students.length;
+  const internCount = students.filter((r) => isInternDestination(r.destination)).length;
+  const pendingCount = students.filter((r) => r.destination === '待实习').length;
+  const gradCount = students.filter((r) => r.destination === '备考研究生').length;
+  const civilCount = students.filter((r) => r.destination === '备考公务员').length;
+  const matchCount = students.filter((r) => isInternDestination(r.destination) && MATCH_CATEGORIES.has(r.jobCategory)).length;
+  const starCount = students.filter((r) => isInternDestination(r.destination) && r.starStatus === '是').length;
+  const rawMatchRate = total ? (matchCount / total) * 100 : 0;
+  const rawStarRate = total ? (starCount / total) * 100 : 0;
+
+  const destStack = DEST_STACK_LABELS.map((label) => (
+    dirLabels.map((d) => groups[d].filter((r) => destStackLabel(r.destination) === label).length)
+  ));
+
+  const perClass = dirLabels.map((d) => {
+    const list = groups[d];
+    const den = list.length;
+    const matchNum = list.filter((r) => isInternDestination(r.destination) && MATCH_CATEGORIES.has(r.jobCategory)).length;
+    const starNum = list.filter((r) => isInternDestination(r.destination) && r.starStatus === '是').length;
+    const sopNum = list.filter((r) => isInternDestination(r.destination) && r.sopStatus === '是').length;
+    return {
+      total: den,
+      matchNum,
+      starNum,
+      sopNum,
+      matchRate: den ? (matchNum / den) * 100 : 0,
+      starRate: den ? (starNum / den) * 100 : 0,
+    };
+  });
+
+  const interned = students.filter((r) => isInternDestination(r.destination));
+  const jobCatMap = {};
+  CATEGORY_OPTIONS.forEach((k) => { jobCatMap[k] = 0; });
+  const salaryCounts = Object.fromEntries(SALARY_BUCKETS.map((label) => [label, 0]));
+  const placeCounts = {};
+  interned.forEach((r) => {
+    const cat = r.jobCategory || '待判定';
+    if (jobCatMap[cat] !== undefined) jobCatMap[cat] += 1;
+    else jobCatMap['其它岗位'] += 1;
+    if (String(r.internSalary || '').trim()) {
+      const parsed = analyzeSalary(r.internSalary);
+      const bucket = parsed.monthly == null ? '无法识别' : salaryBucket(parsed.monthly);
+      salaryCounts[bucket] = (salaryCounts[bucket] || 0) + 1;
+    }
+    if (String(r.internLocation || '').trim()) {
+      const place = inferWorkPlace(r.internLocation);
+      placeCounts[place] = (placeCounts[place] || 0) + 1;
+    }
+  });
+
+  const salaryLabels = SALARY_BUCKETS.filter((label) => salaryCounts[label] > 0);
+  if (salaryCounts['无法识别']) salaryLabels.push('无法识别');
+
+  return {
+    total,
+    internCount,
+    pendingCount,
+    gradCount,
+    civilCount,
+    matchCount,
+    starCount,
+    matchRate: formatRate(matchCount, total),
+    starRate: formatRate(starCount, total),
+    rawMatchRate,
+    rawStarRate,
+    destStack,
+    dirLabels,
+    perClass,
+    jobCatMap,
+    internedCount: interned.length,
+    salaryLabels,
+    salaryData: salaryLabels.map((label) => salaryCounts[label] || 0),
+    places: topWorkPlaces(placeCounts),
+  };
+}
+
+/* --------------------------------------------------------------------------
+   Main Component: DataDashboard
+   -------------------------------------------------------------------------- */
 
 export default function DataDashboard() {
   const [records, setRecords] = useState([]);
@@ -54,23 +769,70 @@ export default function DataDashboard() {
   const [filterDir, setFilterDir] = useState('');
   const [detail, setDetail] = useState(null);
   const [editing, setEditing] = useState(false);
-  const [editForm, setEditForm] = useState({ jobCategory: '待判定', sopStatus: '待判定', starStatus: '待判定' });
+  const [editForm, setEditForm] = useState({ jobCategory: '待判定', qualityStatus: '待判定', starStatus: '待判定' });
   const [loadError, setLoadError] = useState('');
   const [configs, setConfigs] = useState([]);
   const [configId, setConfigId] = useState('');
+  const [isDemoMode, setIsDemoMode] = useState(false);
+  const [importFeedback, setImportFeedback] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const [clearConfirm, setClearConfirm] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [assessConfirm, setAssessConfirm] = useState(false);
+  const [assessing, setAssessing] = useState(false);
+  const [overwriteAssessment, setOverwriteAssessment] = useState(false);
+
   const selectedConfig = configs.find((c) => String(c.id) === String(configId));
 
-  const chartClassRef = useRef(null);
-  const chartDestRef = useRef(null);
-  const chartDirRef = useRef(null);
-  const chartSopRef = useRef(null);
-  const chartStarRef = useRef(null);
+  const chartDestStackRef = useRef(null);
+  const chartMatchRef = useRef(null);
+  const chartStarRateRef = useRef(null);
+  const chartSopCountRef = useRef(null);
+  const chartJobCatRef = useRef(null);
+  const chartSalaryRef = useRef(null);
+  const chartPlaceRef = useRef(null);
+  const fileRef = useRef(null);
   const chartsRef = useRef({});
 
+  const analytics = useMemo(() => buildInternAnalytics(records), [records]);
+
+  function loadDemoData() {
+    setIsDemoMode(true);
+    setConfigs(DEMO_CONFIGS);
+    setConfigId('demo-1');
+    setRecords(DEMO_RECORDS);
+    setLoadError('');
+  }
+
+  function resetToLive() {
+    setIsDemoMode(false);
+    setConfigs([]);
+    setConfigId('');
+    setRecords([]);
+    setLoadError('');
+    fetch(withBasePath('/api/tracking-configs'), { cache: 'no-store' })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'HTTP ' + res.status);
+        const list = Array.isArray(data.configs) ? data.configs : [];
+        setConfigs(list);
+        if (list.length) setConfigId(String(list[0].id));
+      })
+      .catch((e) => {
+        setLoadError('读取跟踪项目失败：' + e.message);
+      });
+  }
+
   async function loadAll(cid = configId) {
+    if (isDemoMode) {
+      if (cid === 'demo-1') setRecords(DEMO_RECORDS);
+      else if (cid === 'demo-2') setRecords(DEMO_RECORDS.slice(0, 8));
+      else setRecords(DEMO_RECORDS);
+      return true;
+    }
     if (!cid) {
       setRecords([]);
-      return;
+      return true;
     }
     try {
       const res = await fetch(withBasePath('/api/student-info?configId=' + encodeURIComponent(cid)), { cache: 'no-store' });
@@ -78,9 +840,11 @@ export default function DataDashboard() {
       if (!res.ok) throw new Error(data.error || 'HTTP ' + res.status);
       setRecords(Array.isArray(data.records) ? data.records : []);
       setLoadError('');
+      return true;
     } catch (e) {
       setRecords([]);
-      setLoadError('加载失败：' + e.message);
+      setLoadError('加载数据失败：' + e.message);
+      return false;
     }
   }
 
@@ -90,131 +854,372 @@ export default function DataDashboard() {
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'HTTP ' + res.status);
         const list = Array.isArray(data.configs) ? data.configs : [];
-        setConfigs(list);
-        if (list.length && !configId) setConfigId(String(list[0].id));
+        if (list.length > 0) {
+          setConfigs(list);
+          if (!configId) setConfigId(String(list[0].id));
+        } else {
+          // If no configs in database, enable demo mode for immediate preview
+          loadDemoData();
+        }
       })
-      .catch((e) => setLoadError('读取跟踪项目失败：' + e.message));
+      .catch(() => {
+        // Fallback to high-fidelity demo dataset when database is unreachable
+        loadDemoData();
+      });
   }, []);
 
   useEffect(() => {
     if (!configId) return;
     loadAll(configId);
-  }, [configId]);
+  }, [configId, isDemoMode]);
 
+  /* --------------------------------------------------------------------------
+     Chart.js Lifecycle & Configuration
+     -------------------------------------------------------------------------- */
   useEffect(() => {
     let cancelled = false;
+    const localCharts = {};
 
     import('chart.js/auto').then(({ default: Chart }) => {
       if (cancelled) return;
-      const localCharts = {};
 
-      const clsMap = {};
-      ['一班', '二班', '三班', '四班', '五班', '六班'].forEach((c) => { clsMap[c] = 0; });
-      records.forEach((r) => { if (r.className && clsMap[r.className] !== undefined) clsMap[r.className]++; });
-      const clsData = Object.entries(clsMap).filter(([, v]) => v > 0);
-      if (clsData.length && chartClassRef.current) {
-        localCharts.cls = new Chart(chartClassRef.current, {
-          type: 'bar',
-          data: { labels: clsData.map((d) => d[0]), datasets: [{ data: clsData.map((d) => d[1]), backgroundColor: '#60a5fa' }] },
-          options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0, font: { size: 11 } } }, x: { ticks: { font: { size: 11 } } } } },
-        });
-      }
+      const tickFont = {
+        family: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+        size: 11,
+      };
+      const gridConfig = { color: 'rgba(226, 232, 240, 0.7)', drawBorder: false };
+      const modernTooltip = {
+        backgroundColor: '#0f172a',
+        titleColor: '#f8fafc',
+        bodyColor: '#e2e8f0',
+        padding: 10,
+        cornerRadius: 8,
+        boxPadding: 4,
+        titleFont: { size: 12, weight: '600' },
+        bodyFont: { size: 12 },
+      };
 
-      const destMap = { '实习就业': 0, '待实习': 0, '备考研究生': 0, '备考公务员': 0 };
-      records.forEach((r) => {
-        if (!r.destination) return;
-        const key = (r.destination === '实习' || r.destination === '就业') ? '实习就业' : r.destination;
-        if (destMap[key] !== undefined) destMap[key]++;
+      const rateTooltip = (meta, unit) => ({
+        ...modernTooltip,
+        callbacks: {
+          label(ctx) {
+            const m = meta[ctx.dataIndex];
+            if (!m || !m.den) return ' --';
+            return ' ' + m.rate.toFixed(1) + '%（' + m.num + '/' + m.den + ' 人）';
+          },
+          title(items) {
+            return (items[0] && items[0].label) || unit;
+          },
+        },
       });
-      const destData = Object.entries(destMap).filter(([, v]) => v > 0);
-      if (destData.length && chartDestRef.current) {
-        localCharts.dest = new Chart(chartDestRef.current, {
-          type: 'doughnut',
-          data: { labels: destData.map((d) => d[0]), datasets: [{ data: destData.map((d) => d[1]), backgroundColor: ['#3b82f6', '#8b5cf6', '#f59e0b', '#10b981'] }] },
-          options: { responsive: true, plugins: { legend: { position: 'bottom', labels: { font: { size: 11 } } } } },
-        });
-      }
 
-      function statusChart(key, canvas, values, order, colors) {
-        const map = {};
-        order.forEach((k) => { map[k] = 0; });
-        values.forEach((v) => { if (map[v] !== undefined) map[v]++; });
-        const data = order.map((label) => ({ label, count: map[label] })).filter((d) => d.count > 0);
-        if (!data.length || !canvas) return;
-        localCharts[key] = new Chart(canvas, {
-          type: 'doughnut',
-          data: { labels: data.map((d) => d.label), datasets: [{ data: data.map((d) => d.count), backgroundColor: colors }] },
-          options: { responsive: true, plugins: { legend: { position: 'bottom', labels: { font: { size: 11 } } } } },
-        });
-      }
-
-      statusChart('sop', chartSopRef.current, records.map((r) => r.sopStatus || '待判定'), ['是', '否', '待判定'], ['#22c55e', '#94a3b8', '#f59e0b']);
-      statusChart('star', chartStarRef.current, records.map((r) => r.starStatus || '待判定'), ['是', '否', '待判定'], ['#22c55e', '#94a3b8', '#f59e0b']);
-
-      const dirMap = { '前端实训1-3班': 0, '前端实训4-6班': 0, '后端实训': 0 };
-      records.forEach((r) => { if (r.trainingDirection && dirMap[r.trainingDirection] !== undefined) dirMap[r.trainingDirection]++; });
-      const dirData = Object.entries(dirMap).filter(([, v]) => v > 0);
-      if (dirData.length && chartDirRef.current) {
-        localCharts.dir = new Chart(chartDirRef.current, {
+      // 1. 各实训方向实习去向分布 (Stacked Bar)
+      if (chartDestStackRef.current) {
+        localCharts.destStack = createChart(Chart, chartDestStackRef.current, {
           type: 'bar',
-          data: { labels: dirData.map((d) => d[0]), datasets: [{ data: dirData.map((d) => d[1]), backgroundColor: ['#60a5fa', '#34d399', '#f59e0b'] }] },
-          options: { responsive: true, indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: { beginAtZero: true, ticks: { precision: 0, font: { size: 11 } } } } },
+          data: {
+            labels: analytics.dirLabels,
+            datasets: DEST_STACK_LABELS.map((label, i) => ({
+              label,
+              data: analytics.destStack[i],
+              backgroundColor: DEST_STACK_COLORS[i],
+              stack: 'dest',
+              borderRadius: 4,
+            })),
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { position: 'bottom', labels: { font: { size: 12 }, boxWidth: 12, padding: 16 } },
+              tooltip: modernTooltip,
+            },
+            scales: {
+              x: { stacked: true, ticks: { font: tickFont, color: '#64748b' }, grid: { display: false } },
+              y: { stacked: true, beginAtZero: true, ticks: { precision: 0, font: tickFont, color: '#64748b' }, grid: gridConfig },
+            },
+          },
         });
       }
 
+      // 2. 各实训方向实习对口率 (Bar)
+      const matchMeta = analytics.perClass.map((c) => ({ num: c.matchNum, den: c.total, rate: c.matchRate }));
+      if (chartMatchRef.current) {
+        localCharts.match = createChart(Chart, chartMatchRef.current, {
+          type: 'bar',
+          data: {
+            labels: analytics.dirLabels,
+            datasets: [{
+              label: '实习对口率',
+              data: analytics.perClass.map((c) => c.matchRate),
+              backgroundColor: '#2563eb',
+              borderRadius: { topLeft: 6, topRight: 6 },
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: rateTooltip(matchMeta, '实习对口率'), chartValueLabels: { format: 'percent' } },
+            scales: {
+              x: { ticks: { font: tickFont, color: '#64748b' }, grid: { display: false } },
+              y: { beginAtZero: true, max: 100, ticks: { callback: (v) => v + '%', font: tickFont, color: '#64748b' }, grid: gridConfig },
+            },
+          },
+        });
+      }
+
+      // 3. 各实训方向实习明星率 (Bar)
+      const starMeta = analytics.perClass.map((c) => ({ num: c.starNum, den: c.total, rate: c.starRate }));
+      if (chartStarRateRef.current) {
+        localCharts.starRate = createChart(Chart, chartStarRateRef.current, {
+          type: 'bar',
+          data: {
+            labels: analytics.dirLabels,
+            datasets: [{
+              label: '实习明星率',
+              data: analytics.perClass.map((c) => c.starRate),
+              backgroundColor: '#f59e0b',
+              borderRadius: { topLeft: 6, topRight: 6 },
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: rateTooltip(starMeta, '实习明星率'), chartValueLabels: { format: 'percent' } },
+            scales: {
+              x: { ticks: { font: tickFont, color: '#64748b' }, grid: { display: false } },
+              y: { beginAtZero: true, max: 100, ticks: { callback: (v) => v + '%', font: tickFont, color: '#64748b' }, grid: gridConfig },
+            },
+          },
+        });
+      }
+
+      // 4. 各实训方向 SOP 岗位人数 (Bar)
+      if (chartSopCountRef.current) {
+        localCharts.sopCount = createChart(Chart, chartSopCountRef.current, {
+          type: 'bar',
+          data: {
+            labels: analytics.dirLabels,
+            datasets: [{
+              label: 'SOP 岗位人数',
+              data: analytics.perClass.map((c) => c.sopNum),
+              backgroundColor: '#10b981',
+              borderRadius: { topLeft: 6, topRight: 6 },
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: modernTooltip },
+            scales: {
+              x: { ticks: { font: tickFont, color: '#64748b' }, grid: { display: false } },
+              y: { beginAtZero: true, ticks: { precision: 0, font: tickFont, color: '#64748b' }, grid: gridConfig },
+            },
+          },
+        });
+      }
+
+      // 5. 实习薪资分布 (Bar)
+      if (analytics.salaryData.length && chartSalaryRef.current) {
+        localCharts.salary = createChart(Chart, chartSalaryRef.current, {
+          type: 'bar',
+          data: {
+            labels: analytics.salaryLabels,
+            datasets: [{
+              label: '人数',
+              data: analytics.salaryData,
+              backgroundColor: analytics.salaryLabels.map((label) => (
+                label === '无法识别' ? '#94a3b8' : SALARY_COLORS[SALARY_BUCKETS.indexOf(label)] || '#2563eb'
+              )),
+              borderRadius: { topLeft: 6, topRight: 6 },
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: modernTooltip },
+            scales: {
+              x: { ticks: { font: tickFont, color: '#64748b' }, grid: { display: false } },
+              y: { beginAtZero: true, ticks: { precision: 0, font: tickFont, color: '#64748b' }, grid: gridConfig },
+            },
+          },
+        });
+      }
+
+      // 6. 实习地点分布 (Horizontal Bar)
+      if (analytics.places.labels.length && chartPlaceRef.current) {
+        localCharts.place = createChart(Chart, chartPlaceRef.current, {
+          type: 'bar',
+          data: {
+            labels: analytics.places.labels,
+            datasets: [{
+              label: '人数',
+              data: analytics.places.data,
+              backgroundColor: '#0d9488',
+              borderRadius: { topRight: 6, bottomRight: 6 },
+            }],
+          },
+          options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false }, tooltip: modernTooltip },
+            scales: {
+              x: { beginAtZero: true, ticks: { precision: 0, font: tickFont, color: '#64748b' }, grid: gridConfig },
+              y: { ticks: { font: tickFont, color: '#64748b' }, grid: { display: false } },
+            },
+          },
+        });
+      }
+
+      // 7. 岗位分类分布 (Doughnut)
+      const jobCatData = CATEGORY_OPTIONS
+        .map((label) => ({ label, count: analytics.jobCatMap[label] || 0 }))
+        .filter((d) => d.count > 0);
+
+      if (jobCatData.length && chartJobCatRef.current) {
+        localCharts.jobCat = createChart(Chart, chartJobCatRef.current, {
+          type: 'doughnut',
+          data: {
+            labels: jobCatData.map((d) => d.label),
+            datasets: [{
+              data: jobCatData.map((d) => d.count),
+              backgroundColor: jobCatData.map((d) => JOB_CATEGORY_COLORS[d.label] || '#94a3b8'),
+              borderWidth: 2,
+              borderColor: '#ffffff',
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            cutout: '65%',
+            plugins: {
+              legend: { position: 'bottom', labels: { font: { size: 11 }, boxWidth: 10, padding: 12 } },
+              tooltip: modernTooltip,
+            },
+          },
+        });
+      }
+
+      if (cancelled) {
+        destroyCharts(localCharts);
+        return;
+      }
+      destroyCharts(chartsRef.current);
       chartsRef.current = localCharts;
     });
 
     return () => {
       cancelled = true;
-      Object.values(chartsRef.current).forEach((c) => c.destroy());
+      if (chartsRef.current !== localCharts) destroyCharts(localCharts);
+      destroyCharts(chartsRef.current);
       chartsRef.current = {};
     };
-  }, [records]);
+  }, [analytics]);
 
-  const internCount = records.filter((r) => r.destination === '实习就业' || r.destination === '实习' || r.destination === '就业').length;
-  const pendingCount = records.filter((r) => r.destination === '待实习').length;
-  const gradCount = records.filter((r) => r.destination === '备考研究生').length;
-  const civilCount = records.filter((r) => r.destination === '备考公务员').length;
-  const stats = [
-    { num: records.length, label: '总记录数' },
-    { num: internCount, label: selectedConfig && selectedConfig.type === '就业' ? '就业' : '实习' },
-    { num: pendingCount, label: '待实习' },
-    { num: gradCount, label: '备考研究生' },
-    { num: civilCount, label: '备考公务员' },
+  /* --------------------------------------------------------------------------
+     Computed KPI Cards & Filters
+     -------------------------------------------------------------------------- */
+  const cohortMark = (selectedConfig && String(selectedConfig.title).match(/\d{4}届/)) || null;
+  const totalLabel = (cohortMark ? cohortMark[0] : '') + '学生总数';
+
+  const kpis = [
+    {
+      num: analytics.total,
+      label: totalLabel,
+      sub: selectedConfig ? '建档基数 100%' : '档案总数',
+      theme: 'theme-blue',
+      icon: <IconUsers />,
+    },
+    {
+      num: analytics.internCount,
+      label: '已实习学生',
+      sub: analytics.total ? `占比 ${((analytics.internCount / analytics.total) * 100).toFixed(1)}%` : '--',
+      theme: 'theme-green',
+      icon: <IconBriefcase />,
+    },
+    {
+      num: analytics.pendingCount,
+      label: '待实习学生',
+      sub: analytics.total ? `占比 ${((analytics.pendingCount / analytics.total) * 100).toFixed(1)}%` : '--',
+      theme: 'theme-amber',
+      icon: <IconClock />,
+    },
+    {
+      num: analytics.gradCount,
+      label: '备考研究生',
+      sub: analytics.total ? `占比 ${((analytics.gradCount / analytics.total) * 100).toFixed(1)}%` : '--',
+      theme: 'theme-purple',
+      icon: <IconGraduationCap />,
+    },
+    {
+      num: analytics.civilCount,
+      label: '备考公务员',
+      sub: analytics.total ? `占比 ${((analytics.civilCount / analytics.total) * 100).toFixed(1)}%` : '--',
+      theme: 'theme-rose',
+      icon: <IconBuilding />,
+    },
   ];
+
+
+  // 筛选项 = 标准三项 + 数据里实际出现的其它方向，避免命名不一致时整批记录被筛掉
+  const dirFilterOptions = useMemo(() => {
+    const present = new Set(records.map((r) => String(r.trainingDirection || '').trim()).filter(Boolean));
+    const extra = [...present]
+      .filter((dir) => !TRAINING_OPTIONS.includes(dir))
+      .sort((a, b) => a.localeCompare(b, 'zh'));
+    return [...TRAINING_OPTIONS, ...extra];
+  }, [records]);
 
   const list = records.filter((r) => {
     if (filterClass && r.className !== filterClass) return false;
     if (filterDest) {
-      if (filterDest === '实习就业') {
-        if (r.destination !== '实习就业' && r.destination !== '实习' && r.destination !== '就业') return false;
-      } else if (r.destination !== filterDest) {
+      if (filterDest === INTERN_DEST_LABEL) {
+        if (!isInternDestination(r.destination)) return false;
+      } else if (canonicalDestination(r.destination) !== filterDest) {
         return false;
       }
     }
     if (filterDir && r.trainingDirection !== filterDir) return false;
     if (search.trim()) {
       const kw = search.trim().toLowerCase();
-      const hay = (r.studentName + ' ' + r.studentId + ' ' + r.internCompany + ' ' + r.internPosition + ' ' + r.gradSchool).toLowerCase();
+      const hay = (
+        (r.studentName || '') + ' ' +
+        (r.studentId || '') + ' ' +
+        (r.internCompany || '') + ' ' +
+        (r.internPosition || '') + ' ' +
+        (r.gradSchool || '')
+      ).toLowerCase();
       if (!hay.includes(kw)) return false;
     }
     return true;
   });
 
+  const isFiltered = Boolean(search.trim() || filterClass || filterDest || filterDir);
+
+  function clearFilters() {
+    setSearch('');
+    setFilterClass('');
+    setFilterDest('');
+    setFilterDir('');
+  }
+
+  /* --------------------------------------------------------------------------
+     Excel & Data Handlers
+     -------------------------------------------------------------------------- */
   async function exportExcel() {
     const XLSX = await import('xlsx');
     const header = [
       '序号', '姓名', '班级', '学号', '籍贯', '实训方向', '性别', '手机号',
       '去向', '实习单位名称', '实习单位具体地点', '实习单位联系人', '实习单位联系人电话',
-      '具体业务线', '实习岗位', '实习薪资', '入职时间', '实习结束时间',
+      '具体业务线', '实习岗位', '实习薪资', '实习入职时间', '实习结束时间',
       '考研目标院校', '目标专业', '备注', '岗位分类', '是否SOP岗位', '是否实习明星',
     ];
     const rows = records.map((r, i) => [
       i + 1, r.studentName, r.className, r.studentId, r.hometown,
-      r.trainingDirection, r.gender, r.phone, r.destination,
+      r.trainingDirection, r.gender, r.phone, canonicalDestination(r.destination),
       r.internCompany, r.internLocation, r.internContact, r.internContactPhone,
-      r.businessLine, r.internPosition, r.internSalary, r.internStartDate, r.internEndDate,
+      r.businessLine, r.internPosition, salaryDisplay(r.internSalary), r.internStartDate, r.internEndDate,
       r.gradSchool, r.gradMajor, r.remark,
       r.jobCategory || '待判定', r.sopStatus || '待判定', r.starStatus || '待判定',
     ]);
@@ -235,31 +1240,282 @@ export default function DataDashboard() {
 
   async function importExcel(input) {
     if (!input.files || !input.files[0]) return;
+    const fileName = input.files[0].name;
+    let sheetName = '';
+    setImporting(true);
+    setImportFeedback({
+      type: 'processing',
+      title: '正在导入',
+      message: `正在解析并写入「${fileName}」，数据较多时需要几十秒，请勿关闭页面。`,
+      fileName,
+      sheetName,
+      details: [],
+    });
     try {
+      if (isDemoMode) {
+        setImportFeedback({
+          type: 'error',
+          title: '导入失败（项目）',
+          message: '当前为演示模式，不能写入真实数据。请连接真实跟踪项目后再导入。',
+          fileName,
+          sheetName,
+          details: [
+            '演示项目（如 demo-1）不是可写入的真实项目 ID',
+            '请点击「尝试连接真实数据库」并选择真实跟踪项目',
+          ],
+        });
+        return;
+      }
+
       const XLSX = await import('xlsx');
       const buf = await input.files[0].arrayBuffer();
-      const wb = XLSX.read(buf);
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
-      const { items, skipped, total } = parseStudentSheet(rows);
-      if (!configId) throw new Error('请先选择跟踪项目，再导入');
-      const res = await fetch(withBasePath('/api/student-info/batch'), {
+      const wb = readImportWorkbook(XLSX, buf, fileName);
+      if (!wb.SheetNames || !wb.SheetNames.length) {
+        setImportFeedback({
+          type: 'error',
+          title: '导入失败（解析）',
+          message: '工作簿中没有工作表。',
+          fileName,
+          details: [],
+        });
+        return;
+      }
+      sheetName = wb.SheetNames[0];
+      const ws = wb.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '', raw: false, blankrows: true });
+      const parsed = parseStudentSheet(rows);
+      const items = parsed.items || [];
+      const skipped = parsed.skipped || 0;
+      const total = parsed.total || 0;
+      const dailyConverted = parsed.dailyConverted || 0;
+      const parseIssues = Array.isArray(parsed.issues) ? parsed.issues : [];
+      const headerIssue = parseIssues.find((issue) => issue.code === 'HEADER_NOT_FOUND');
+
+      if (!items.length) {
+        setImportFeedback({
+          type: 'error',
+          title: headerIssue ? '导入失败（表头）' : '导入失败（解析）',
+          message: headerIssue
+            ? headerIssue.message
+            : (parseIssues[0] && parseIssues[0].message)
+              || '没有读到可导入的数据。请使用含「姓名」「学号」表头的表格，模板第一行可以是标题。',
+          fileName,
+          sheetName,
+          details: parseIssues,
+        });
+        return;
+      }
+
+      if (!configId) {
+        setImportFeedback({
+          type: 'error',
+          title: '导入失败（项目）',
+          message: '请先选择跟踪项目，再导入。',
+          fileName,
+          sheetName,
+          details: parseIssues,
+        });
+        return;
+      }
+      const numericConfigId = Number(configId);
+      if (!Number.isInteger(numericConfigId) || numericConfigId <= 0) {
+        setImportFeedback({
+          type: 'error',
+          title: '导入失败（项目）',
+          message: '当前选择的不是可写入的真实跟踪项目，请选择真实项目后再导入。',
+          fileName,
+          sheetName,
+          details: [`当前项目 ID：${configId}`, ...parseIssues],
+        });
+        return;
+      }
+
+      let res;
+      try {
+        res = await fetch(withBasePath('/api/student-info/batch'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items, configId: numericConfigId }),
+        });
+      } catch (err) {
+        setImportFeedback({
+          type: 'error',
+          title: '导入失败（请求）',
+          message: '无法连接到导入接口：' + (err.message || '网络错误'),
+          fileName,
+          sheetName,
+          details: parseIssues,
+        });
+        return;
+      }
+
+      const rawText = await res.text();
+      let data = {};
+      if (rawText) {
+        try {
+          data = JSON.parse(rawText);
+        } catch {
+          setImportFeedback({
+            type: 'error',
+            title: '导入失败（HTTP 非 JSON）',
+            message: `服务器返回了无法解析的响应（HTTP ${res.status}）`,
+            fileName,
+            sheetName,
+            details: [`HTTP ${res.status}，响应不是 JSON`, ...parseIssues],
+          });
+          return;
+        }
+      }
+
+      const imported = Number.isInteger(data.imported) ? data.imported : 0;
+      const existingKept = Number.isInteger(data.existing) ? data.existing : 0;
+      const apiSkipped = Number.isInteger(data.skipped) ? data.skipped : 0;
+      const apiIssues = Array.isArray(data.issues) ? data.issues : [];
+      const details = [...parseIssues, ...apiIssues];
+      const convertedNote = dailyConverted ? `其中 ${dailyConverted} 条日薪已按 22 个工作日折算为月薪。` : '';
+      const countNote = `本次新增 ${imported} 条，旧数据保留 ${existingKept} 条（学号已存在，未覆盖），跳过 ${skipped + apiSkipped} 条，共读取 ${total} 行。`;
+
+      if (imported > 0 || existingKept > 0) {
+        const refreshed = await loadAll();
+        if (!res.ok) {
+          setImportFeedback({
+            type: 'warning',
+            title: refreshed ? '部分导入失败（写入）' : '部分导入失败（写入/刷新）',
+            message: (data.error || '写入中断')
+              + `。${countNote}${convertedNote}`
+              + (refreshed ? '' : '刷新列表失败，请手动点击刷新查看已写入数据。'),
+            fileName,
+            sheetName,
+            details,
+          });
+          return;
+        }
+        if (!refreshed) {
+          setImportFeedback({
+            type: 'warning',
+            title: '导入成功但刷新失败',
+            message: `${countNote}${convertedNote}刷新列表失败，请手动点击刷新。`,
+            fileName,
+            sheetName,
+            details,
+          });
+          return;
+        }
+        setImportFeedback({
+          type: details.length ? 'warning' : 'success',
+          title: details.length ? '导入完成（含提示）' : (imported > 0 ? '导入完成' : '导入完成（无新增）'),
+          message: countNote + convertedNote,
+          fileName,
+          sheetName,
+          details,
+        });
+        return;
+      }
+
+      const stage = !res.ok && /跟踪项目/.test(data.error || '') ? '项目' : '写入';
+      setImportFeedback({
+        type: 'error',
+        title: `导入失败（${stage}）`,
+        message: data.error || (res.ok ? `没有可写入的记录。${countNote}` : `导入失败（HTTP ${res.status}）`),
+        fileName,
+        sheetName,
+        details,
+      });
+    } catch (e) {
+      setImportFeedback({
+        type: 'error',
+        title: '导入失败（解析）',
+        message: e.message || '读取 Excel 失败',
+        fileName,
+        sheetName,
+        details: [],
+      });
+    } finally {
+      setImporting(false);
+      input.value = '';
+    }
+  }
+
+  async function clearAll() {
+    if (clearing) return;
+    if (isDemoMode) {
+      setRecords([]);
+      setClearConfirm(false);
+      setImportFeedback({ type: 'success', title: '清空完成', message: '演示数据已清空。', details: [] });
+      return;
+    }
+    if (!configId) {
+      setClearConfirm(false);
+      setImportFeedback({ type: 'error', title: '清空失败', message: '请先选择跟踪项目。', details: [] });
+      return;
+    }
+    setClearing(true);
+    try {
+      const res = await fetch(withBasePath('/api/student-info?configId=' + encodeURIComponent(configId)), { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'HTTP ' + res.status);
+      const deleted = Number.isInteger(data.deleted) ? data.deleted : 0;
+      await loadAll();
+      setClearConfirm(false);
+      setImportFeedback({
+        type: 'success',
+        title: '清空完成',
+        message: `已清除「${(selectedConfig || {}).title || '当前项目'}」的 ${deleted} 条学生档案记录。`,
+        details: [],
+      });
+    } catch (e) {
+      setImportFeedback({ type: 'error', title: '清空失败', message: e.message || '清空失败', details: [] });
+    } finally {
+      setClearing(false);
+    }
+  }
+
+  async function assessAll() {
+    if (assessing) return;
+    if (isDemoMode) {
+      setRecords((prev) => prev.map((r) => ({ ...r, ...assessRecord(r) })));
+      setAssessConfirm(false);
+      setImportFeedback({ type: 'success', title: '判定完成', message: '演示数据已按规则判定。', details: describeRules() });
+      return;
+    }
+    if (!configId) {
+      setAssessConfirm(false);
+      setImportFeedback({ type: 'error', title: '判定失败', message: '请先选择跟踪项目。', details: [] });
+      return;
+    }
+    setAssessing(true);
+    try {
+      const res = await fetch(withBasePath('/api/student-info/assess'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items, configId: Number(configId) }),
+        body: JSON.stringify({ configId: Number(configId), overwrite: overwriteAssessment }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'HTTP ' + res.status);
-      alert('导入完成：成功 ' + data.imported + ' 条，跳过 ' + (skipped + (data.skipped || 0)) + ' 条，共读取 ' + total + ' 行');
-      loadAll();
+      const assessed = Number.isInteger(data.assessed) ? data.assessed : 0;
+      const kept = Number.isInteger(data.kept) ? data.kept : 0;
+      const total = Number.isInteger(data.total) ? data.total : 0;
+      await loadAll();
+      setAssessConfirm(false);
+      setImportFeedback({
+        type: 'success',
+        title: '判定完成',
+        message: `已按规则更新 ${assessed} 条，保持原判定 ${kept} 条，共 ${total} 条记录。`,
+        details: describeRules(),
+      });
     } catch (e) {
-      alert('导入失败：' + e.message);
+      setImportFeedback({ type: 'error', title: '判定失败', message: e.message || '判定失败', details: [] });
+    } finally {
+      setAssessing(false);
     }
-    input.value = '';
   }
 
   async function deleteRec(id) {
     if (!confirm('确认删除这条记录？')) return;
+    if (isDemoMode) {
+      setRecords((prev) => prev.filter((r) => r.id !== id));
+      return;
+    }
     try {
       const res = await fetch(withBasePath('/api/student-info/' + id), { method: 'DELETE' });
       const data = await res.json().catch(() => ({}));
@@ -281,13 +1537,19 @@ export default function DataDashboard() {
     setDetail(r);
     setEditForm({
       jobCategory: r.jobCategory || '待判定',
-      sopStatus: r.sopStatus || '待判定',
+      qualityStatus: r.qualityStatus || '待判定',
       starStatus: r.starStatus || '待判定',
     });
     setEditing(true);
   }
 
   async function saveAssessment(id) {
+    if (isDemoMode) {
+      setRecords((prev) => prev.map((r) => (r.id === id ? { ...r, ...editForm } : r)));
+      setDetail((prev) => (prev && prev.id === id ? { ...prev, ...editForm } : prev));
+      setEditing(false);
+      return;
+    }
     try {
       const res = await fetch(withBasePath('/api/student-info/' + id), {
         method: 'PATCH',
@@ -309,7 +1571,6 @@ export default function DataDashboard() {
     setEditing(false);
   }
 
-
   function switchConfig(id) {
     if (String(id) === String(configId)) return;
     setConfigId(String(id));
@@ -321,68 +1582,432 @@ export default function DataDashboard() {
     setEditing(false);
   }
 
+  /* --------------------------------------------------------------------------
+     Render UI
+     -------------------------------------------------------------------------- */
   return (
-    <div className="container">
-      <div className="config-switch" role="tablist" aria-label="跟踪项目">
-        {configs.length === 0 ? (
-          <span style={{ color: 'var(--muted)', fontSize: 13 }}>暂无跟踪项目</span>
-        ) : configs.map((c) => (
-          <button
-            key={c.id}
-            type="button"
-            role="tab"
-            className={String(configId) === String(c.id) ? 'active' : undefined}
-            onClick={() => switchConfig(c.id)}
-          >
-            {c.title}
-            <span className={`type-tag ${c.type === '就业' ? 'job' : 'intern'}`}>{c.type === '就业' ? '就业' : '实习'}</span>
-          </button>
-        ))}
-      </div>
-      <div className="hero">
-        <h1>
-          {selectedConfig ? selectedConfig.title : '信息看板'}
-          {selectedConfig ? (
-            <span className={`type-tag ${selectedConfig.type === '就业' ? 'job' : 'intern'}`}>
-              {selectedConfig.type === '就业' ? '就业' : '实习'}
+    <div className="container dashboard-intern">
+      {/* Demo Mode Notice Banner */}
+      {isDemoMode ? (
+        <div style={{
+          background: '#eff6ff',
+          border: '1px solid #bfdbfe',
+          borderRadius: 10,
+          padding: '10px 16px',
+          marginBottom: 16,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          fontSize: 13,
+          color: '#1d4ed8',
+          flexWrap: 'wrap',
+          gap: 8,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 16 }}>✨</span>
+            <span>
+              <strong>当前正在体验高保真演示数据</strong>（共 15 条模拟学生记录，支持测试图表穿透、条件筛选与教师判定修改）。
             </span>
-          ) : null}
-        </h1>
-        <p>
-          分析该跟踪项目下学生提交的
-          {selectedConfig && selectedConfig.type === '就业' ? '就业' : '实习'}
-          数据。仅展示已启用的跟踪项目。支持筛选、详情、判定与导出。
-        </p>
-      </div>
-      <div className="stats-row" id="stats">
-        {stats.map((s) => (
-          <div className="stat-card" key={s.label}>
-            <div className="num">{s.num}</div>
-            <div className="label">{s.label}</div>
+          </div>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            style={{ background: '#ffffff', color: '#2563eb', border: '1px solid #bfdbfe' }}
+            onClick={resetToLive}
+          >
+            尝试连接真实数据库
+          </button>
+        </div>
+      ) : null}
+      <ImportFeedback feedback={importFeedback} onDismiss={() => setImportFeedback(null)} />
+
+      {/* 1. Modern Page Header */}
+      <header className="dd-header">
+        <div className="dd-header-top">
+          <div className="dd-breadcrumb">
+            <span>就业运营工作台</span>
+            <span className="dd-breadcrumb-dot" />
+            <span>实习就业监控大屏</span>
+            <span className="dd-breadcrumb-dot" />
+            <span style={{ color: '#0f172a', fontWeight: 600 }}>{selectedConfig ? selectedConfig.title : '数据分析看板'}</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: '#94a3b8' }}>
+            <IconActivity />
+            <span>{isDemoMode ? '演示数据模式' : '实时数据监控'}</span>
+          </div>
+        </div>
+
+        <div className="dd-header-main">
+          <div className="dd-header-left">
+            <div className="dd-header-title-row">
+              <h1 className="dd-header-title">{selectedConfig ? selectedConfig.title : '实习就业信息监控'}</h1>
+              {selectedConfig ? (
+                <span className={`dd-type-badge ${selectedConfig.type === '就业' ? 'job' : 'intern'}`}>
+                  <span className="dd-type-dot" />
+                  {selectedConfig.type === '就业' ? '就业跟踪' : '实习跟踪'}
+                </span>
+              ) : null}
+            </div>
+            <p className="dd-header-desc">
+              深度分析该批次学生提交的实习去向、岗位对口结构、薪资档位与升学公考动态，支持一键筛选、教师判定及 Excel 导入导出。
+            </p>
+          </div>
+
+          <div className="dd-header-actions">
+            <div className="dd-select-project-wrap">
+              <span className="dd-select-project-icon"><IconCalendar /></span>
+              {configs.length === 0 ? (
+                <span style={{ color: 'var(--muted)', fontSize: 13 }}>暂无跟踪项目</span>
+              ) : (
+                <select
+                  className="dd-select-project"
+                  value={configId}
+                  onChange={(e) => switchConfig(e.target.value)}
+                  aria-label="选择跟踪项目"
+                >
+                  {configs.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.title}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <span className="dd-select-chevron"><IconChevronDown /></span>
+            </div>
+
+            <div className="dd-btn-group">
+              {!isDemoMode ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  style={{ color: '#2563eb', background: '#eff6ff', border: '1px solid #bfdbfe' }}
+                  onClick={loadDemoData}
+                  title="载入模拟数据体验完整图表与表格"
+                >
+                  <IconSparkles /> 示例数据
+                </button>
+              ) : null}
+              <button type="button" className="btn btn-ghost btn-sm" onClick={exportExcel} title="导出学生记录表格">
+                <IconDownload /> 导出 Excel
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setAssessConfirm(true)}
+                disabled={assessing || clearing || importing}
+                title="按规则自动判定岗位分类与实习明星"
+              >
+                {assessing ? <IconSpinner /> : <IconSparkles />} 智能判定
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => fileRef.current && fileRef.current.click()}
+                disabled={importing}
+                aria-busy={importing}
+                title="从 Excel 批量导入学生数据"
+              >
+                {importing ? <IconSpinner /> : <IconUpload />} {importing ? '导入中…' : '导入 Excel'}
+              </button>
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                style={{ display: 'none' }}
+                disabled={importing}
+                onChange={(e) => importExcel(e.target)}
+              />
+              <button
+                type="button"
+                className="btn btn-danger btn-sm"
+                onClick={() => setClearConfirm(true)}
+                disabled={clearing || importing}
+                title="清空当前跟踪项目的全部学生数据"
+              >
+                <IconTrash /> 清空
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* 2. Primary KPI Stat Cards (5 cols) */}
+      <section className="dd-kpi-grid">
+        {kpis.map((s) => (
+          <div className={`dd-kpi-card ${s.theme}`} key={s.label}>
+            <div className="dd-kpi-header">
+              <span className="dd-kpi-title">{s.label}</span>
+              <div className="dd-kpi-icon-box">{s.icon}</div>
+            </div>
+            <div className="dd-kpi-body">
+              <span className="dd-kpi-number">{s.num}</span>
+              {s.sub ? <span className="dd-kpi-badge">{s.sub}</span> : null}
+            </div>
           </div>
         ))}
+      </section>
+
+      {/* 3. Core Quality Rate Cards (2 cols with progress bars) */}
+      <section className="dd-rates-grid">
+        <div className="dd-rate-card match">
+          <div className="dd-rate-top">
+            <div className="dd-rate-label-wrap">
+              <div className="dd-rate-icon"><IconTarget /></div>
+              <div>
+                <div className="dd-rate-name">实习专业对口率</div>
+                <div className="dd-rate-sub-desc">SOP 及 IT 专业对口岗位学生占比</div>
+              </div>
+            </div>
+            <div className="dd-rate-num">{analytics.matchRate.text}</div>
+          </div>
+          <div className="dd-rate-progress-bg">
+            <div
+              className="dd-rate-progress-bar"
+              style={{ width: `${Math.min(100, Math.max(0, analytics.rawMatchRate))}%` }}
+            />
+          </div>
+          <div className="dd-rate-footer">
+            <span>对口人数基数</span>
+            <span style={{ fontWeight: 600, color: '#1e293b' }}>{analytics.matchRate.sub}</span>
+          </div>
+        </div>
+
+        <div className="dd-rate-card star">
+          <div className="dd-rate-top">
+            <div className="dd-rate-label-wrap">
+              <div className="dd-rate-icon"><IconStar /></div>
+              <div>
+                <div className="dd-rate-name">实习明星推荐率</div>
+                <div className="dd-rate-sub-desc">综合表现突出与教师标杆推荐学生</div>
+              </div>
+            </div>
+            <div className="dd-rate-num">{analytics.starRate.text}</div>
+          </div>
+          <div className="dd-rate-progress-bg">
+            <div
+              className="dd-rate-progress-bar"
+              style={{ width: `${Math.min(100, Math.max(0, analytics.rawStarRate))}%` }}
+            />
+          </div>
+          <div className="dd-rate-footer">
+            <span>明星学生基数</span>
+            <span style={{ fontWeight: 600, color: '#1e293b' }}>{analytics.starRate.sub}</span>
+          </div>
+        </div>
+      </section>
+
+      {/* 4. Deep Visual Analytics & Charts */}
+      <div className="dd-section-header">
+        <div className="dd-section-title-wrap">
+          <span className="dd-section-title-icon"><IconActivity /></span>
+          <h2 className="dd-section-title">多维数据分布图表</h2>
+        </div>
+        <p className="dd-section-desc">透视实训方向去向走向、对口质量、薪资待遇档位及就业重点城市</p>
       </div>
 
-      <div className="chart-grid">
-        <div className="chart-box"><h3>各班级人数分布</h3><canvas ref={chartClassRef} id="chartClass" /></div>
-        <div className="chart-box"><h3>去向分布</h3><canvas ref={chartDestRef} id="chartDest" /></div>
+      {/* Full width stacked bar chart */}
+      <div className="dd-chart-box full">
+        <div className="dd-chart-header">
+          <div>
+            <h3 className="dd-chart-title">
+              <span className="dd-chart-title-accent" />
+              各实训方向实习去向分布
+            </h3>
+            <p className="dd-chart-hint">分析各实训方向学生在已实习、备考研、备考公与待实习的具体人数构成</p>
+          </div>
+        </div>
+        <div className="dd-chart-canvas-wrap">
+          {analytics.dirLabels.length === 0 ? (
+            <div className="dd-empty-chart">
+              <div className="dd-empty-chart-icon"><IconBarChart /></div>
+              <div style={{ fontWeight: 600, color: '#475569' }}>暂无实训方向去向数据</div>
+              <span>学生登记或导入数据后图表将自动生成堆叠统计</span>
+            </div>
+          ) : (
+            <canvas ref={chartDestStackRef} id="chartDestStack" />
+          )}
+        </div>
       </div>
-      <div className="chart-box" style={{ marginBottom: 20 }}>
-        <h3>实训方向分布</h3>
-        <canvas ref={chartDirRef} id="chartDir" />
+
+      {/* Chart Grid 1: 对口率 & 明星率 */}
+      <div className="dd-chart-grid">
+        <div className="dd-chart-box">
+          <div className="dd-chart-header">
+            <div>
+              <h3 className="dd-chart-title">
+                <span className="dd-chart-title-accent" />
+                各实训方向实习对口率
+              </h3>
+              <p className="dd-chart-hint">展示各实训方向已实习学生匹配 SOP 类与 IT 岗位的百分比</p>
+            </div>
+          </div>
+          <div className="dd-chart-canvas-wrap">
+            {analytics.dirLabels.length === 0 ? (
+              <div className="dd-empty-chart">
+                <div className="dd-empty-chart-icon"><IconBarChart /></div>
+                <div style={{ fontWeight: 600, color: '#475569' }}>暂无实训方向对口率数据</div>
+              </div>
+            ) : (
+              <canvas ref={chartMatchRef} id="chartMatch" />
+            )}
+          </div>
+        </div>
+
+        <div className="dd-chart-box">
+          <div className="dd-chart-header">
+            <div>
+              <h3 className="dd-chart-title">
+                <span className="dd-chart-title-accent" style={{ background: '#f59e0b' }} />
+                各实训方向实习明星率
+              </h3>
+              <p className="dd-chart-hint">展示各实训方向被评定为实习明星的学生占比</p>
+            </div>
+          </div>
+          <div className="dd-chart-canvas-wrap">
+            {analytics.dirLabels.length === 0 ? (
+              <div className="dd-empty-chart">
+                <div className="dd-empty-chart-icon"><IconBarChart /></div>
+                <div style={{ fontWeight: 600, color: '#475569' }}>暂无实训方向明星率数据</div>
+              </div>
+            ) : (
+              <canvas ref={chartStarRateRef} id="chartStarRate" />
+            )}
+          </div>
+        </div>
       </div>
-      <div className="card">
-        <div className="card-title">学生信息记录</div>
-        <div className="toolbar">
-          <input
-            id="search"
-            type="text"
-            placeholder="搜索姓名 / 学号 / 公司..."
-            style={{ flex: 1, minWidth: 180 }}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <select id="filterClass" value={filterClass} onChange={(e) => setFilterClass(e.target.value)}>
+
+      {/* Chart Grid 2: 薪资分布 & 地点分布 */}
+      <div className="dd-chart-grid">
+        <div className="dd-chart-box">
+          <div className="dd-chart-header">
+            <div>
+              <h3 className="dd-chart-title">
+                <span className="dd-chart-title-accent" style={{ background: '#3b82f6' }} />
+                实习薪资分布档位
+              </h3>
+              <p className="dd-chart-hint">日薪已按 22 个工作日自动折算为月薪，按规范薪资区间聚合</p>
+            </div>
+          </div>
+          <div className="dd-chart-canvas-wrap">
+            {analytics.salaryData.length === 0 ? (
+              <div className="dd-empty-chart">
+                <div className="dd-empty-chart-icon"><IconBarChart /></div>
+                <div style={{ fontWeight: 600, color: '#475569' }}>暂无实习薪资数据</div>
+                <span>录入学生实习薪资后将自动按档位分箱呈现</span>
+              </div>
+            ) : (
+              <canvas ref={chartSalaryRef} id="chartSalary" />
+            )}
+          </div>
+        </div>
+
+        <div className="dd-chart-box">
+          <div className="dd-chart-header">
+            <div>
+              <h3 className="dd-chart-title">
+                <span className="dd-chart-title-accent" style={{ background: '#0d9488' }} />
+                主要实习城市与地点分布
+              </h3>
+              <p className="dd-chart-hint">自动从实习单位地址提取并归一化为省市地点</p>
+            </div>
+          </div>
+          <div className="dd-chart-canvas-wrap" style={{ height: Math.max(290, analytics.places.labels.length * 36) }}>
+            {analytics.places.labels.length === 0 ? (
+              <div className="dd-empty-chart">
+                <div className="dd-empty-chart-icon"><IconBarChart /></div>
+                <div style={{ fontWeight: 600, color: '#475569' }}>暂无实习地点数据</div>
+                <span>登记实习地点后将自动汇总城市分布排行</span>
+              </div>
+            ) : (
+              <canvas ref={chartPlaceRef} id="chartPlace" />
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Chart Grid 3: SOP 岗位人数 & 岗位分类分布 */}
+      <div className="dd-chart-grid">
+        <div className="dd-chart-box">
+          <div className="dd-chart-header">
+            <div>
+              <h3 className="dd-chart-title">
+                <span className="dd-chart-title-accent" style={{ background: '#10b981' }} />
+                各实训方向 SOP 岗位人数
+              </h3>
+              <p className="dd-chart-hint">统计各实训方向进入企业规范化 SOP 流程岗位的实习人数</p>
+            </div>
+          </div>
+          <div className="dd-chart-canvas-wrap">
+            {analytics.dirLabels.length === 0 ? (
+              <div className="dd-empty-chart">
+                <div className="dd-empty-chart-icon"><IconBarChart /></div>
+                <div style={{ fontWeight: 600, color: '#475569' }}>暂无实训方向 SOP 数据</div>
+              </div>
+            ) : (
+              <canvas ref={chartSopCountRef} id="chartSopCount" />
+            )}
+          </div>
+        </div>
+
+        <div className="dd-chart-box">
+          <div className="dd-chart-header">
+            <div>
+              <h3 className="dd-chart-title">
+                <span className="dd-chart-title-accent" style={{ background: '#8b5cf6' }} />
+                已实习学生岗位分类分布
+              </h3>
+              <p className="dd-chart-hint">涵盖 SOP 类、非 SOP 类、IT 企业非 IT 岗及其他岗位结构</p>
+            </div>
+          </div>
+          <div className="dd-chart-canvas-wrap">
+            {analytics.internedCount === 0 ? (
+              <div className="dd-empty-chart">
+                <div className="dd-empty-chart-icon"><IconBarChart /></div>
+                <div style={{ fontWeight: 600, color: '#475569' }}>暂无已实习学生岗位分类数据</div>
+                <span>完成教师判定后将生成岗位分类占比环形图</span>
+              </div>
+            ) : (
+              <canvas ref={chartJobCatRef} id="chartJobCat" />
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* 5. Student Records Table & Search Toolbar */}
+      <div className="dd-card">
+        <div className="dd-card-header">
+          <div className="dd-card-title-group">
+            <h3 className="dd-card-title">学生档案记录与明细</h3>
+            <span className="dd-count-pill">全部 {records.length} 人</span>
+            {isFiltered ? <span className="dd-count-pill filtered">已筛选 {list.length} 人</span> : null}
+          </div>
+        </div>
+
+        {/* Toolbar */}
+        <div className="dd-toolbar">
+          <div className="dd-search-input-wrap">
+            <span className="dd-search-icon"><IconSearch /></span>
+            <input
+              id="search"
+              type="text"
+              className="dd-search-input"
+              placeholder="搜索姓名 / 学号 / 实习单位 / 岗位 / 考研院校..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+            {search ? (
+              <button type="button" className="dd-search-clear" onClick={() => setSearch('')} title="清空搜索">
+                <IconX />
+              </button>
+            ) : null}
+          </div>
+
+          <select
+            id="filterClass"
+            className="dd-filter-select"
+            value={filterClass}
+            onChange={(e) => setFilterClass(e.target.value)}
+          >
             <option value="">全部班级</option>
             <option value="一班">一班</option>
             <option value="二班">二班</option>
@@ -391,83 +2016,203 @@ export default function DataDashboard() {
             <option value="五班">五班</option>
             <option value="六班">六班</option>
           </select>
-          <select id="filterDest" value={filterDest} onChange={(e) => setFilterDest(e.target.value)}>
+
+          <select
+            id="filterDest"
+            className="dd-filter-select"
+            value={filterDest}
+            onChange={(e) => setFilterDest(e.target.value)}
+          >
             <option value="">全部去向</option>
-            <option value="实习就业">{selectedConfig && selectedConfig.type === '就业' ? '就业' : '实习'}</option>
+            <option value={INTERN_DEST_LABEL}>{INTERN_DEST_LABEL}</option>
             <option value="待实习">待实习</option>
             <option value="备考研究生">备考研究生</option>
             <option value="备考公务员">备考公务员</option>
           </select>
-          <select id="filterDir" value={filterDir} onChange={(e) => setFilterDir(e.target.value)}>
-            <option value="">全部方向</option>
-            <option value="前端实训1-3班">前端实训1-3班</option>
-            <option value="前端实训4-6班">前端实训4-6班</option>
-            <option value="后端实训">后端实训</option>
+
+          <select
+            id="filterDir"
+            className="dd-filter-select"
+            value={filterDir}
+            onChange={(e) => setFilterDir(e.target.value)}
+          >
+            <option value="">全部实训方向</option>
+            {dirFilterOptions.map((dir) => (
+              <option key={dir} value={dir}>{dir}</option>
+            ))}
           </select>
-          <button className="btn btn-ghost btn-sm" onClick={exportExcel}>导出 Excel</button>
-          <label className="btn btn-primary btn-sm" style={{ cursor: 'pointer', position: 'relative', overflow: 'hidden' }}>导入 Excel
-            <input
-              type="file"
-              accept=".xlsx,.xls,.csv"
-              style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0, pointerEvents: 'none' }}
-              onChange={(e) => importExcel(e.target)}
-            />
-          </label>
-          <button className="btn btn-ghost btn-sm" onClick={loadAll}>刷新</button>
+
+          {isFiltered ? (
+            <button type="button" className="dd-reset-btn" onClick={clearFilters} title="恢复默认显示全部">
+              <IconReset /> 清空筛选
+            </button>
+          ) : null}
         </div>
-        <div id="tableWrap">
+
+        {/* Table Content */}
+        <div className="dd-table-container">
           {loadError ? (
-            <div className="empty">{loadError}</div>
+            <div style={{ textAlign: 'center', padding: '40px 20px', color: '#e11d48' }}>
+              <div style={{ fontWeight: 600, marginBottom: 8 }}>{loadError}</div>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => loadAll()}>重试加载</button>
+            </div>
           ) : list.length === 0 ? (
-            <div className="empty">当前跟踪项目暂无记录，让学生在填写页登记后刷新</div>
+            <div style={{ textAlign: 'center', padding: '50px 20px', color: '#64748b' }}>
+              <div style={{ color: '#94a3b8', marginBottom: 12 }}><IconUsers /></div>
+              <div style={{ fontWeight: 600, fontSize: 14, color: '#334155', marginBottom: 6 }}>
+                {isFiltered ? '未找到符合筛选条件的学生记录' : '当前跟踪项目暂无学生档案记录'}
+              </div>
+              <div style={{ fontSize: 13, color: '#94a3b8', marginBottom: 14 }}>
+                {isFiltered ? '请尝试修改或清空筛选关键词' : '可通过上方「导入 Excel」按钮批量导入，或载入示例数据体验看板效果'}
+              </div>
+              {!isDemoMode ? (
+                <button type="button" className="btn btn-primary btn-sm" onClick={loadDemoData}>
+                  载入示例数据体验
+                </button>
+              ) : (
+                <button type="button" className="btn btn-ghost btn-sm" onClick={clearFilters}>
+                  重置筛选条件
+                </button>
+              )}
+            </div>
           ) : (
-            <table>
+            <table className="dd-table">
               <thead>
                 <tr>
-                  <th>姓名</th><th>班级</th><th>实训方向</th><th>去向</th><th>实习单位/岗位</th><th>考研院校</th><th>操作</th>
+                  <th>姓名 / 学号</th>
+                  <th>班级 / 实训方向</th>
+                  <th>去向状态</th>
+                  <th>实习单位 / 岗位</th>
+                  <th>考研院校 / 专业</th>
+                  <th>创建日期</th>
+                  <th>教师判定</th>
+                  <th className="sticky-action">操作</th>
                 </tr>
               </thead>
               <tbody>
                 {list.map((r) => {
-                  const intern = (r.destination === '实习就业' || r.destination === '实习' || r.destination === '就业')
-                    ? (r.internCompany || '—')
-                    : '—';
-                  const internSub = (r.destination === '实习就业' || r.destination === '实习' || r.destination === '就业')
-                    ? (r.internPosition || '') + (r.internSalary ? ' · ' + r.internSalary : '')
+                  const intern = isInternDestination(r.destination) ? (r.internCompany || '—') : '—';
+                  const internSub = isInternDestination(r.destination)
+                    ? (r.internPosition || '')
                     : '';
                   const grad = r.destination === '备考研究生' ? (r.gradSchool || '—') : '—';
                   const gradSub = r.destination === '备考研究生' ? (r.gradMajor || '') : '';
+
                   return (
                     <tr key={r.id}>
                       <td>
-                        {r.studentName || ''}
-                        <br />
-                        <span style={{ color: 'var(--muted)', fontSize: 12 }}>{r.studentId || ''}</span>
-                      </td>
-                      <td>{r.className || '—'}</td>
-                      <td>{r.trainingDirection || '—'}</td>
-                      <td>{r.destination || '—'}</td>
-                      <td>
-                        {intern}
-                        {internSub ? (
-                          <>
-                            <br />
-                            <span style={{ color: 'var(--muted)', fontSize: 12 }}>{internSub}</span>
-                          </>
-                        ) : null}
+                        <div className="dd-student-name">
+                          {r.studentName || '—'}
+                          {r.gender ? <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 400 }}>({r.gender})</span> : null}
+                        </div>
+                        {r.studentId ? <span className="dd-student-id">{r.studentId}</span> : null}
                       </td>
                       <td>
-                        {grad}
-                        {gradSub ? (
-                          <>
-                            <br />
-                            <span style={{ color: 'var(--muted)', fontSize: 12 }}>{gradSub}</span>
-                          </>
-                        ) : null}
+                        <div style={{ fontWeight: 600, color: '#0f172a' }}>{r.className || '—'}</div>
+                        <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{r.trainingDirection || '—'}</div>
                       </td>
                       <td>
-                        <button className="btn btn-ghost btn-sm" onClick={() => openDetail(r.id)}>详情</button>{' '}
-                        <button className="btn btn-danger btn-sm" onClick={() => deleteRec(r.id)}>删除</button>
+                        <DestinationBadge dest={r.destination} />
+                      </td>
+                      <td>
+                        {isInternDestination(r.destination) ? (
+                          <div>
+                            <div className="dd-company-name">{intern}</div>
+                            <div className="dd-company-sub">
+                              {internSub ? <span>{internSub}</span> : null}
+                              {r.internSalary ? <span className="dd-salary-tag">{salaryDisplay(r.internSalary)}</span> : null}
+                            </div>
+                          </div>
+                        ) : (
+                          <span style={{ color: '#94a3b8' }}>—</span>
+                        )}
+                      </td>
+                      <td>
+                        {r.destination === '备考研究生' ? (
+                          <div>
+                            <div style={{ fontWeight: 600, color: '#0f172a' }}>{grad}</div>
+                            {gradSub ? <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{gradSub}</div> : null}
+                          </div>
+                        ) : (
+                          <span style={{ color: '#94a3b8' }}>—</span>
+                        )}
+                      </td>
+                      <td>
+                        <span className="dd-created-at">{formatCreatedAt(r.createdAt) || '—'}</span>
+                      </td>
+                      <td>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                          {/* 仅展示岗位类型、明星企业、明星就业三个维度。 */}
+                          {r.starStatus === '是' || r.qualityStatus === '是' ? (
+                            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                              {r.starStatus === '是' ? (
+                                <span style={{
+                                  fontSize: 11,
+                                  padding: '1px 6px',
+                                  borderRadius: 4,
+                                  background: '#fffbeb',
+                                  color: '#d97706',
+                                  border: '1px solid #fde68a',
+                                  fontWeight: 600,
+                                  whiteSpace: 'nowrap'
+                                }}>
+                                  ★ 明星就业
+                                </span>
+                              ) : null}
+                              {r.qualityStatus === '是' ? (
+                                <span style={{
+                                  display: 'inline-flex',
+                                  alignItems: 'center',
+                                  gap: 3,
+                                  fontSize: 11,
+                                  padding: '1px 6px',
+                                  borderRadius: 4,
+                                  background: '#eff6ff',
+                                  color: '#2563eb',
+                                  border: '1px solid #bfdbfe',
+                                  fontWeight: 600,
+                                  whiteSpace: 'nowrap'
+                                }}>
+                                  <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true" focusable="false">
+                                    <path d="M6 1 11 10H1Z" />
+                                  </svg>
+                                  明星企业
+                                </span>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          <span style={{ fontSize: 11, color: '#64748b' }}>
+                            {r.jobCategory || '待判定'}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="sticky-action">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <button
+                            type="button"
+                            className="dd-action-btn detail"
+                            onClick={() => openDetail(r.id)}
+                            title="查看详情"
+                          >
+                            <IconEye /> 详情
+                          </button>
+                          <button
+                            type="button"
+                            className="dd-action-btn judge"
+                            onClick={() => editAssessment(r)}
+                            title="教师判定"
+                          >
+                            <IconEdit /> 判定
+                          </button>
+                          <button
+                            type="button"
+                            className="dd-action-btn delete"
+                            onClick={() => deleteRec(r.id)}
+                            title="删除记录"
+                          >
+                            <IconTrash />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -478,93 +2223,305 @@ export default function DataDashboard() {
         </div>
       </div>
 
-      <div className="chart-grid">
-        <div className="chart-box"><h3>是否为 SOP 岗位</h3><canvas ref={chartSopRef} id="chartSop" /></div>
-        <div className="chart-box"><h3>是否为实习明星</h3><canvas ref={chartStarRef} id="chartStar" /></div>
-      </div>
-
-      <div
-        className={detail ? 'detail-modal show' : 'detail-modal'}
-        id="modal"
-        onClick={(e) => { if (e.target === e.currentTarget) closeModal(); }}
-      >
-        {detail && editing ? (
-          <div className="box" id="modalBody">
-            <h2 style={{ fontSize: 17, marginBottom: 6 }}>老师判定：{detail.studentName || ''}</h2>
-            <p style={{ color: 'var(--muted)', marginBottom: 16 }}>岗位：{detail.internPosition || '—'} · 单位：{detail.internCompany || '—'}</p>
-            <div className="form-group" style={{ marginBottom: 14 }}>
-              <label>岗位分类</label>
-              <select id="editJobCategory" value={editForm.jobCategory} onChange={(e) => setEditForm((f) => ({ ...f, jobCategory: e.target.value }))}>
-                {CATEGORY_OPTIONS.map((v) => <option key={v} value={v}>{v}</option>)}
-              </select>
-            </div>
-            <div className="form-group" style={{ marginBottom: 14 }}>
-              <label>是否为SOP岗位</label>
-              <select id="editSopStatus" value={editForm.sopStatus} onChange={(e) => setEditForm((f) => ({ ...f, sopStatus: e.target.value }))}>
-                {STATUS_OPTIONS.map((v) => <option key={v} value={v}>{v}</option>)}
-              </select>
-            </div>
-            <div className="form-group" style={{ marginBottom: 14 }}>
-              <label>是否为实习明星</label>
-              <select id="editStarStatus" value={editForm.starStatus} onChange={(e) => setEditForm((f) => ({ ...f, starStatus: e.target.value }))}>
-                {STATUS_OPTIONS.map((v) => <option key={v} value={v}>{v}</option>)}
-              </select>
-            </div>
-            <div style={{ textAlign: 'right', marginTop: 18 }}>
-              <button className="btn btn-ghost" onClick={closeModal}>取消</button>{' '}
-              <button className="btn btn-primary" onClick={() => saveAssessment(detail.id)}>保存判定</button>
-            </div>
-          </div>
-        ) : detail ? (
-          <div className="box" id="modalBody">
-            <h2 style={{ fontSize: 17, marginBottom: 6 }}>{detail.studentName || ''}</h2>
-            <p style={{ color: 'var(--muted)', marginBottom: 16 }}>
-              {(detail.className || '') + ' · ' + (detail.trainingDirection || '') + ' · ' + (detail.studentId || '') + ' · ' + (detail.gender || '') + ' · ' + (detail.phone || '')}
-            </p>
-            <div style={{ background: 'var(--bg)', padding: 12, borderRadius: 8, marginBottom: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-                <span>老师判定：{(detail.jobCategory || '待判定') + ' · SOP：' + (detail.sopStatus || '待判定') + ' · 实习明星：' + (detail.starStatus || '待判定')}</span>
-                <button className="btn btn-primary btn-sm" onClick={() => editAssessment(detail)}>编辑判定</button>
+      {/* 6. Detail & Teacher Assessment Modal */}
+      {detail ? (
+        <div
+          className="dd-modal-overlay"
+          onClick={(e) => { if (e.target === e.currentTarget) closeModal(); }}
+        >
+          <div className="dd-modal-dialog" role="dialog" aria-modal="true">
+            <div className="dd-modal-header">
+              <div className="dd-modal-title-wrap">
+                <h3 className="dd-modal-title">{detail.studentName || '学生档案'}</h3>
+                {detail.studentId ? <span className="dd-student-id">{detail.studentId}</span> : null}
+                <span className="dd-count-pill">{detail.className || '班级未录入'}</span>
               </div>
+              <button type="button" className="dd-modal-close-btn" onClick={closeModal} title="关闭窗口">
+                <IconX />
+              </button>
             </div>
-            {detail.hometown ? <p style={{ marginBottom: 12 }}>籍贯：{detail.hometown}</p> : null}
-            {detail.destination === '实习就业' || detail.destination === '实习' || detail.destination === '就业' ? (
-              <>
-                <h3 style={{ fontSize: 14, marginBottom: 8 }}>{selectedConfig && selectedConfig.type === '就业' ? '就业信息' : '实习信息'}</h3>
-                <div style={{ background: 'var(--bg)', padding: 12, borderRadius: 8, fontSize: 13, marginBottom: 16 }}>
-                  单位名称：{detail.internCompany || '—'}<br />
-                  实习岗位：{detail.internPosition || '—'}<br />
-                  具体地点：{detail.internLocation || '—'}<br />
-                  联系人：{detail.internContact || '—'}<br />
-                  联系电话：{detail.internContactPhone || '—'}<br />
-                  业务线：{detail.businessLine || '—'}<br />
-                  薪资：{detail.internSalary || '—'}<br />
-                  入职时间：{detail.internStartDate || '—'}<br />
-                  结束时间：{detail.internEndDate || '—'}
+
+            <div className="dd-modal-body">
+              {editing ? (
+                /* Edit Assessment Form */
+                <div>
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>
+                      修改教师判定：{detail.studentName}
+                    </div>
+                    <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
+                      当前岗位：{detail.internPosition || '—'} · 单位：{detail.internCompany || '—'}
+                    </div>
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: 14 }}>
+                    <label>岗位类型</label>
+                    <select
+                      className="dd-filter-select"
+                      style={{ width: '100%' }}
+                      value={editForm.jobCategory}
+                      onChange={(e) => setEditForm((f) => ({ ...f, jobCategory: e.target.value }))}
+                    >
+                      {CATEGORY_OPTIONS.map((v) => (
+                        <option key={v} value={v}>{v}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: 14 }}>
+                    <label>是否为明星企业</label>
+                    <select
+                      className="dd-filter-select"
+                      style={{ width: '100%' }}
+                      value={editForm.qualityStatus}
+                      onChange={(e) => setEditForm((f) => ({ ...f, qualityStatus: e.target.value }))}
+                    >
+                      {STATUS_OPTIONS.map((v) => (
+                        <option key={v} value={v}>{v}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="form-group" style={{ marginBottom: 20 }}>
+                    <label>是否为明星就业</label>
+                    <select
+                      className="dd-filter-select"
+                      style={{ width: '100%' }}
+                      value={editForm.starStatus}
+                      onChange={(e) => setEditForm((f) => ({ ...f, starStatus: e.target.value }))}
+                    >
+                      {STATUS_OPTIONS.map((v) => (
+                        <option key={v} value={v}>{v}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+                    <button type="button" className="btn btn-ghost" onClick={() => setEditing(false)}>取消</button>
+                    <button type="button" className="btn btn-primary" onClick={() => saveAssessment(detail.id)}>保存判定</button>
+                  </div>
                 </div>
-              </>
-            ) : null}
-            {detail.destination === '备考研究生' ? (
-              <>
-                <h3 style={{ fontSize: 14, marginBottom: 8 }}>考研信息</h3>
-                <div style={{ background: 'var(--bg)', padding: 12, borderRadius: 8, fontSize: 13, marginBottom: 16 }}>
-                  目标院校：{detail.gradSchool || '—'}<br />
-                  目标专业：{detail.gradMajor || '—'}
+              ) : (
+                /* View Student Details */
+                <div>
+                  {/* Teacher Assessment Highlight Banner */}
+                  <div className="dd-assessment-banner">
+                    <div>
+                      <div style={{ fontSize: 11, color: '#64748b', fontWeight: 600, textTransform: 'uppercase', marginBottom: 6 }}>
+                        教师综合判定
+                      </div>
+                      <div className="dd-assessment-chips">
+                        <span className="dd-assessment-chip highlight">岗位类型：{detail.jobCategory || '待判定'}</span>
+                        <span className={`dd-assessment-chip ${detail.qualityStatus === '是' ? 'highlight' : ''}`}>
+                          明星企业：{detail.qualityStatus || '待判定'}
+                        </span>
+                        <span className={`dd-assessment-chip ${detail.starStatus === '是' ? 'highlight' : ''}`}>
+                          明星就业：{detail.starStatus || '待判定'}
+                        </span>
+                      </div>
+                    </div>
+                    <button type="button" className="btn btn-ghost btn-sm" onClick={() => editAssessment(detail)}>
+                      <IconEdit /> 编辑判定
+                    </button>
+                  </div>
+
+                  {/* Basic Info */}
+                  <div className="dd-info-section-title">基本信息</div>
+                  <div className="dd-info-grid">
+                    <div className="dd-info-item">
+                      <span className="dd-info-label">学生姓名</span>
+                      <span className="dd-info-value">{detail.studentName || '—'}</span>
+                    </div>
+                    <div className="dd-info-item">
+                      <span className="dd-info-label">学号</span>
+                      <span className="dd-info-value">{detail.studentId || '—'}</span>
+                    </div>
+                    <div className="dd-info-item">
+                      <span className="dd-info-label">性别</span>
+                      <span className="dd-info-value">{detail.gender || '—'}</span>
+                    </div>
+                    <div className="dd-info-item">
+                      <span className="dd-info-label">联系电话</span>
+                      <span className="dd-info-value">{detail.phone || '—'}</span>
+                    </div>
+                    <div className="dd-info-item">
+                      <span className="dd-info-label">班级</span>
+                      <span className="dd-info-value">{detail.className || '—'}</span>
+                    </div>
+                    <div className="dd-info-item">
+                      <span className="dd-info-label">实训方向</span>
+                      <span className="dd-info-value">{detail.trainingDirection || '—'}</span>
+                    </div>
+                    <div className="dd-info-item" style={{ gridColumn: '1 / -1' }}>
+                      <span className="dd-info-label">籍贯</span>
+                      <span className="dd-info-value">{detail.hometown || '—'}</span>
+                    </div>
+                  </div>
+
+                  {/* Internship Info */}
+                  {isInternDestination(detail.destination) ? (
+                    <>
+                      <div className="dd-info-section-title">实习就职信息</div>
+                      <div className="dd-info-grid">
+                        <div className="dd-info-item">
+                          <span className="dd-info-label">实习单位名称</span>
+                          <span className="dd-info-value">{detail.internCompany || '—'}</span>
+                        </div>
+                        <div className="dd-info-item">
+                          <span className="dd-info-label">实习岗位</span>
+                          <span className="dd-info-value">{detail.internPosition || '—'}</span>
+                        </div>
+                        <div className="dd-info-item">
+                          <span className="dd-info-label">实习月薪/待遇</span>
+                          <span className="dd-info-value">{detail.internSalary ? salaryDisplay(detail.internSalary) : '—'}</span>
+                        </div>
+                        <div className="dd-info-item">
+                          <span className="dd-info-label">具体业务线</span>
+                          <span className="dd-info-value">{detail.businessLine || '—'}</span>
+                        </div>
+                        <div className="dd-info-item" style={{ gridColumn: '1 / -1' }}>
+                          <span className="dd-info-label">实习单位具体地点</span>
+                          <span className="dd-info-value">{detail.internLocation || '—'}</span>
+                        </div>
+                        <div className="dd-info-item">
+                          <span className="dd-info-label">实习单位联系人</span>
+                          <span className="dd-info-value">{detail.internContact || '—'}</span>
+                        </div>
+                        <div className="dd-info-item">
+                          <span className="dd-info-label">联系人电话</span>
+                          <span className="dd-info-value">{detail.internContactPhone || '—'}</span>
+                        </div>
+                        <div className="dd-info-item">
+                          <span className="dd-info-label">实习入职时间</span>
+                          <span className="dd-info-value">{detail.internStartDate || '—'}</span>
+                        </div>
+                        <div className="dd-info-item">
+                          <span className="dd-info-label">实习结束时间</span>
+                          <span className="dd-info-value">{detail.internEndDate || '—'}</span>
+                        </div>
+                      </div>
+                    </>
+                  ) : null}
+
+                  {/* Graduate School Info */}
+                  {detail.destination === '备考研究生' ? (
+                    <>
+                      <div className="dd-info-section-title">考研升学信息</div>
+                      <div className="dd-info-grid">
+                        <div className="dd-info-item">
+                          <span className="dd-info-label">目标院校</span>
+                          <span className="dd-info-value">{detail.gradSchool || '—'}</span>
+                        </div>
+                        <div className="dd-info-item">
+                          <span className="dd-info-label">目标专业</span>
+                          <span className="dd-info-value">{detail.gradMajor || '—'}</span>
+                        </div>
+                      </div>
+                    </>
+                  ) : null}
+
+                  {/* Remarks */}
+                  {detail.remark ? (
+                    <>
+                      <div className="dd-info-section-title">备注说明</div>
+                      <div style={{ background: '#f8fafc', padding: 12, borderRadius: 8, border: '1px solid #f1f5f9', color: '#334155' }}>
+                        {detail.remark}
+                      </div>
+                    </>
+                  ) : null}
                 </div>
-              </>
-            ) : null}
-            {detail.remark ? (
-              <>
-                <h3 style={{ fontSize: 14, marginBottom: 8 }}>备注</h3>
-                <div style={{ background: 'var(--bg)', padding: 12, borderRadius: 8, fontSize: 13, marginBottom: 16 }}>{detail.remark}</div>
-              </>
-            ) : null}
-            <div style={{ textAlign: 'right', marginTop: 16 }}>
-              <button className="btn btn-ghost" onClick={closeModal}>关闭</button>
+              )}
+            </div>
+
+            <div className="dd-modal-footer">
+              <button type="button" className="btn btn-ghost" onClick={closeModal}>
+                关闭
+              </button>
             </div>
           </div>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
+
+      {clearConfirm ? (
+        <div
+          className="dd-modal-overlay"
+          onClick={(e) => { if (e.target === e.currentTarget && !clearing) setClearConfirm(false); }}
+        >
+          <div className="dd-modal-dialog dd-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="dd-clear-title">
+            <div className="dd-modal-header">
+              <div className="dd-modal-title-wrap">
+                <h3 className="dd-modal-title" id="dd-clear-title">清空跟踪项目数据</h3>
+              </div>
+              <button type="button" className="dd-modal-close-btn" onClick={() => setClearConfirm(false)} disabled={clearing} title="关闭窗口">
+                <IconX />
+              </button>
+            </div>
+            <div className="dd-modal-body">
+              <p className="dd-confirm-question">
+                是否清除跟踪项目「<strong>{(selectedConfig || {}).title || '当前项目'}</strong>」的全部
+                <strong> {records.length} </strong>条学生档案记录？
+              </p>
+              <p className="dd-confirm-warning">
+                该操作不可恢复，清空后需要重新导入 Excel 或由学生重新填写。
+              </p>
+            </div>
+            <div className="dd-modal-footer">
+              <button type="button" className="btn btn-ghost" onClick={() => setClearConfirm(false)} disabled={clearing}>
+                取消
+              </button>
+              <button type="button" className="btn btn-danger" onClick={clearAll} disabled={clearing}>
+                {clearing ? <IconSpinner /> : <IconTrash />} {clearing ? '清空中…' : '确认清空'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {assessConfirm ? (
+        <div
+          className="dd-modal-overlay"
+          onClick={(e) => { if (e.target === e.currentTarget && !assessing) setAssessConfirm(false); }}
+        >
+          <div className="dd-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="dd-assess-title">
+            <div className="dd-modal-header">
+              <div className="dd-modal-title-wrap">
+                <h3 className="dd-modal-title" id="dd-assess-title">按规则自动判定</h3>
+              </div>
+              <button type="button" className="dd-modal-close-btn" onClick={() => setAssessConfirm(false)} disabled={assessing} title="关闭窗口">
+                <IconX />
+              </button>
+            </div>
+            <div className="dd-modal-body">
+              <p className="dd-confirm-question">
+                将对跟踪项目「<strong>{(selectedConfig || {}).title || '当前项目'}</strong>」的
+                <strong> {records.length} </strong>条记录套用以下规则：
+              </p>
+              <ul className="dd-rule-list">
+                {describeRules().map((rule) => (
+                  <li key={rule}>{rule}</li>
+                ))}
+              </ul>
+              <label className="dd-rule-toggle">
+                <input
+                  type="checkbox"
+                  checked={overwriteAssessment}
+                  onChange={(e) => setOverwriteAssessment(e.target.checked)}
+                  disabled={assessing}
+                />
+                同时覆盖已有人工判定（默认只补写仍为「待判定」的字段）
+              </label>
+            </div>
+            <div className="dd-modal-footer">
+              <button type="button" className="btn btn-ghost" onClick={() => setAssessConfirm(false)} disabled={assessing}>
+                取消
+              </button>
+              <button type="button" className="btn btn-primary" onClick={assessAll} disabled={assessing}>
+                {assessing ? <IconSpinner /> : <IconSparkles />} {assessing ? '判定中…' : '开始判定'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

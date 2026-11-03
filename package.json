@@ -8,6 +8,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "test": "node --test tests/imports.test.mjs",
     "preinstall": "node -e \"const ua=process.env.npm_config_user_agent||''; if(!ua.includes('pnpm')){console.error('请使用 pnpm 安装依赖：pnpm install'); process.exit(1)}\""
   },
   "dependencies": {

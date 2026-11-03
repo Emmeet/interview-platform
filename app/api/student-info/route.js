@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { listStudentInfo, upsertStudentInfo } from '@/lib/student-info';
+import { clearStudentInfo, listStudentInfo, upsertStudentInfo } from '@/lib/student-info';
 
 /** GET /api/student-info —— 看板列表，可按 configId 过滤 */
 export async function GET(request) {
@@ -10,6 +10,21 @@ export async function GET(request) {
   } catch (e) {
     console.error('[api/student-info] 查询失败:', e);
     return NextResponse.json({ error: '数据库查询失败：' + e.message }, { status: 500 });
+  }
+}
+
+/** DELETE /api/student-info?configId= —— 清空该跟踪项目的全部学生档案，返回 { deleted } */
+export async function DELETE(request) {
+  try {
+    const configId = request.nextUrl.searchParams.get('configId');
+    const deleted = await clearStudentInfo(configId);
+    return NextResponse.json({ deleted });
+  } catch (e) {
+    if (e.name === 'ValidationError') {
+      return NextResponse.json({ error: e.message }, { status: 400 });
+    }
+    console.error('[api/student-info] 清空失败:', e);
+    return NextResponse.json({ error: '清空失败：' + e.message }, { status: 500 });
   }
 }
 
